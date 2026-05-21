@@ -473,8 +473,8 @@ with tab3:
                 paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
                 font=dict(color="#e6edf3"),
                 margin=dict(l=10, r=120, t=40, b=10))
-            fig_ret.update_xaxis(gridcolor="#21262d")
-            fig_ret.update_yaxis(gridcolor="#21262d")
+            fig_ret.update_xaxes(gridcolor="#21262d")
+            fig_ret.update_yaxes(gridcolor="#21262d")
             st.plotly_chart(fig_ret, use_container_width=True)
         else:
             st.error("找不到數據，港股請用 0700.HK 格式。")
