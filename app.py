@@ -282,63 +282,398 @@ with st.sidebar:
 
 tab1, tab2, tab3, tab4 = st.tabs(["🌍 市場氣氛", "📊 個股掃描", "📐 回撤計算", "📈 技術圖表"])
 
-# ══ TAB 1 ════════════════════════════════════════════════════════════════════
+# ══ TAB 1: 市場氣氛 ══════════════════════════════════════════════════════════
 with tab1:
-    st.subheader("🌍 宏觀市場氣氛")
-    with st.spinner("載入宏觀數據..."):
-        macro = fetch_macro()
+    st.subheader("🌍 宏觀市場氣氛儀表板")
 
-    cols = st.columns(5)
-    icons = {"VIX":"😱","SPX":"🇺🇸","HSI":"🇭🇰","DXY":"💵","US10Y":"🏦"}
-    names = {"VIX":"恐慌指數 VIX","SPX":"標普500","HSI":"恒生指數",
-             "DXY":"美元指數","US10Y":"美10年債息"}
-    for i, (k, v) in enumerate(macro.items()):
-        with cols[i]:
-            color = "#3fb950" if v["chg"] >= 0 else "#f85149"
-            arrow = "▲" if v["chg"] >= 0 else "▼"
+    # ── 數據抓取函數 ──────────────────────────────────────────────────────────
+    @st.cache_data(ttl=1800, show_spinner=False)
+    def fetch_market_sentiment():
+        result = {}
+
+        # 宏觀指數
+        macro_map = {
+            "VIX":   "^VIX",   "VVIX":  "^VVIX",
+            "SPX":   "^GSPC",  "HSI":   "^HSI",
+            "DXY":   "DX-Y.NYB","US10Y": "^TNX",
+            "VHSI":  "^VHSI",  "HYG":   "HYG",
+            "USDHKD":"USDHKD=X","HSI_VOL":"^HSI",
+            "NK225": "^N225",
+        }
+        for name, tk in macro_map.items():
+            try:
+                df = yf.download(tk, period="1y", auto_adjust=True, progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.columns = [c.lower() for c in df.columns]
+                if df.empty or len(df) < 5: continue
+                c   = float(df["close"].iloc[-1])
+                p   = float(df["close"].iloc[-2])
+                hi  = float(df["high"].max())
+                lo  = float(df["low"].min())
+                chg = (c - p) / p * 100
+                pct = (c - lo) / (hi - lo) * 100 if hi != lo else 50
+                vol = float(df["volume"].iloc[-1]) if "volume" in df.columns else 0
+                vol_ma = float(df["volume"].rolling(20).mean().iloc[-1]) if "volume" in df.columns else 1
+                result[name] = {
+                    "val": c, "chg": chg, "pct": pct,
+                    "hi": hi, "lo": lo,
+                    "vol_ratio": vol / vol_ma if vol_ma else 1,
+                    "close_series": df["close"].tolist()[-60:],
+                    "rsi": float(calc_rsi(df["close"]).iloc[-1])
+                }
+            except Exception as e:
+                pass
+
+        # 市場寬度：用 S&P500 代表股（快速抽樣20隻）
+        sp500_sample = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
+                        "JPM","BAC","XOM","JNJ","UNH","PG","AVGO","ORCL",
+                        "HD","MA","V","COST","MRK"]
+        oversold_count = 0
+        overbought_count = 0
+        for tk in sp500_sample:
+            try:
+                df = yf.download(tk, period="3mo", auto_adjust=True, progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.columns = [c.lower() for c in df.columns]
+                if df.empty or len(df) < 20: continue
+                rsi_v = float(calc_rsi(df["close"]).iloc[-1])
+                if rsi_v < 30:  oversold_count += 1
+                if rsi_v > 70:  overbought_count += 1
+            except: pass
+        result["breadth_oversold"]    = oversold_count / len(sp500_sample) * 100
+        result["breadth_overbought"]  = overbought_count / len(sp500_sample) * 100
+
+        return result
+
+    with st.spinner("載入市場氣氛數據（約15秒）..."):
+        mkt = fetch_market_sentiment()
+
+    def safe_get(key, subkey="val", default=0):
+        return mkt.get(key, {}).get(subkey, default) if isinstance(mkt.get(key), dict) else default
+
+    # ── 合成撈底氣氛分計算 ────────────────────────────────────────────────────
+    def calc_fear_score():
+        score = 50  # 基準中性
+
+        vix_v  = safe_get("VIX")
+        vhsi_v = safe_get("VHSI")
+        hyg_chg= safe_get("HYG", "chg")
+        dxy_pct= safe_get("DXY", "pct")
+        breadth= mkt.get("breadth_oversold", 0)
+        hsi_rsi= safe_get("HSI", "rsi")
+        spx_pct= safe_get("SPX", "pct")
+        us10y_v= safe_get("US10Y")
+
+        # VIX 貢獻（越高越恐慌=撈底分越低）
+        if vix_v >= 40:   score -= 30
+        elif vix_v >= 30: score -= 20
+        elif vix_v >= 22: score -= 8
+        elif vix_v <= 15: score += 15
+        elif vix_v <= 18: score += 8
+
+        # VHSI 貢獻
+        if vhsi_v >= 35:   score -= 20
+        elif vhsi_v >= 25: score -= 10
+        elif vhsi_v <= 18: score += 10
+
+        # 市場寬度（超賣股多=恐慌=撈底分低）
+        if breadth >= 40:   score -= 25
+        elif breadth >= 25: score -= 12
+        elif breadth >= 10: score -= 5
+        elif breadth <= 5:  score += 10
+
+        # HYG 高收益債（下跌=信用風險=不利）
+        if hyg_chg <= -1.5: score -= 10
+        elif hyg_chg >= 0.5: score += 5
+
+        # 美元強弱（DXY高位=壓制新興市場）
+        if dxy_pct >= 80:   score -= 8
+        elif dxy_pct <= 30: score += 5
+
+        # 恒指RSI
+        if hsi_rsi <= 30:   score -= 15
+        elif hsi_rsi <= 40: score -= 5
+        elif hsi_rsi >= 65: score += 10
+
+        return max(0, min(100, score))
+
+    fear_score = calc_fear_score()
+    # 撈底機會分 = 100 - fear_score（越恐慌撈底機會越高）
+    opportunity_score = 100 - fear_score
+
+    # ── Section 1: 頂部 KPI 卡 ───────────────────────────────────────────────
+    st.markdown("### 📊 全球宏觀指標")
+    kpi_items = [
+        ("VIX",   "😱 恐慌指數",  "^VIX"),
+        ("VVIX",  "🌊 波動之波動", "^VVIX"),
+        ("SPX",   "🇺🇸 標普500",  "^GSPC"),
+        ("HSI",   "🇭🇰 恒生指數", "^HSI"),
+        ("US10Y", "🏦 美債10年息","^TNX"),
+        ("DXY",   "💵 美元指數",  "DX-Y.NYB"),
+        ("HYG",   "📉 高收益債",  "HYG"),
+        ("VHSI",  "🇭🇰 港股波幅", "^VHSI"),
+    ]
+    cols_kpi = st.columns(8)
+    for i, (key, label, _) in enumerate(kpi_items):
+        val  = safe_get(key)
+        chg  = safe_get(key, "chg")
+        pct  = safe_get(key, "pct")
+        color = "#3fb950" if chg >= 0 else "#f85149"
+        arrow = "▲" if chg >= 0 else "▼"
+        with cols_kpi[i]:
             st.markdown(f"""
             <div class="metric-card">
-              <div style="font-size:1.6em">{icons.get(k,'📊')}</div>
-              <div style="color:#8b949e;font-size:0.8em">{names.get(k,k)}</div>
-              <div style="font-size:1.3em;font-weight:bold;color:#e6edf3">{v['val']:.2f}</div>
-              <div style="color:{color}">{arrow} {v['chg']:+.2f}%</div>
-              <div style="color:#8b949e;font-size:0.75em">52W水位 {v['pct']:.0f}%</div>
+              <div style="font-size:1.1em">{label.split()[0]}</div>
+              <div style="color:#8b949e;font-size:0.72em;line-height:1.2">{' '.join(label.split()[1:])}</div>
+              <div style="font-size:1.15em;font-weight:bold;color:#e6edf3;margin:4px 0">{val:.2f}</div>
+              <div style="color:{color};font-size:0.85em">{arrow} {chg:+.2f}%</div>
+              <div style="color:#8b949e;font-size:0.7em">52W: {pct:.0f}%</div>
             </div>""", unsafe_allow_html=True)
 
     st.divider()
-    vix_val = macro.get("VIX", {}).get("val", 20)
-    if   vix_val >= 35: sentiment = "🔥 極度恐慌 — 歷史上最佳撈底時機！可積極分批建倉"; s_col = "#3fb950"
-    elif vix_val >= 25: sentiment = "⚠️ 市場恐慌 — 謹慎撈底，等待技術確認信號";         s_col = "#d29922"
-    elif vix_val >= 18: sentiment = "😐 市場中性 — 正常波動，選擇性買入高分個股";         s_col = "#8b949e"
-    else:               sentiment = "😎 市場貪婪 — 注意風險，等待回調機會";               s_col = "#f85149"
 
-    st.markdown(
-        f"<div style='background:#161b22;border-radius:10px;padding:20px;border-left:4px solid {s_col}'>"
-        f"<b style='color:{s_col}'>VIX {vix_val:.1f}</b><br>"
-        f"<span style='color:#e6edf3'>{sentiment}</span></div>",
-        unsafe_allow_html=True)
+    # ── Section 2: 撈底機會 Gauge + 說明 ─────────────────────────────────────
+    st.markdown("### 🎯 撈底機會總評")
+    g_col1, g_col2 = st.columns([1, 1])
+
+    with g_col1:
+        # Plotly Gauge
+        if opportunity_score >= 70:
+            gauge_color = "#3fb950"; gauge_text = "🔥 極佳撈底視窗"
+        elif opportunity_score >= 55:
+            gauge_color = "#d29922"; gauge_text = "⚠️ 謹慎撈底機會"
+        elif opportunity_score >= 40:
+            gauge_color = "#8b949e"; gauge_text = "😐 市場中性"
+        else:
+            gauge_color = "#f85149"; gauge_text = "😎 市場貪婪風險"
+
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=opportunity_score,
+            title={"text": f"撈底機會分<br><span style='font-size:0.7em;color:{gauge_color}'>{gauge_text}</span>",
+                   "font": {"color": "#e6edf3", "size": 16}},
+            number={"font": {"color": gauge_color, "size": 48}, "suffix": "/100"},
+            gauge={
+                "axis": {"range": [0, 100], "tickcolor": "#8b949e",
+                         "tickfont": {"color": "#8b949e"}},
+                "bar":  {"color": gauge_color, "thickness": 0.25},
+                "bgcolor": "#161b22",
+                "bordercolor": "#30363d",
+                "steps": [
+                    {"range": [0,  25], "color": "#1a1a2e"},
+                    {"range": [25, 45], "color": "#1c1a00"},
+                    {"range": [45, 65], "color": "#161b22"},
+                    {"range": [65, 80], "color": "#0d2818"},
+                    {"range": [80,100], "color": "#0d3318"},
+                ],
+                "threshold": {
+                    "line": {"color": "#ffffff", "width": 3},
+                    "thickness": 0.8,
+                    "value": opportunity_score
+                }
+            }
+        ))
+        fig_gauge.update_layout(
+            height=280, paper_bgcolor="#0d1117",
+            font=dict(color="#e6edf3"),
+            margin=dict(l=20, r=20, t=60, b=20))
+        st.plotly_chart(fig_gauge, use_container_width=True)
+
+    with g_col2:
+        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+        levels = [
+            ("80-100", "🟢 極佳撈底視窗", "市場極度恐慌，VIX高企，大量股票超賣，歷史上最強分批建倉時機"),
+            ("60-79",  "🟢 良好撈底機會", "市場明顯悲觀，技術面超賣，可開始輕倉試探"),
+            ("40-59",  "⚪ 市場中性",     "正常波動範圍，選擇個股技術信號操作"),
+            ("20-39",  "🟠 市場樂觀",     "情緒偏熱，不宜追高，等待回調機會"),
+            ("0-19",   "🔴 極度貪婪",     "市場過熱，VIX極低，高位風險大，宜減倉觀望"),
+        ]
+        for score_range, label, desc in levels:
+            is_current = False
+            low, high = map(int, score_range.split("-"))
+            if low <= opportunity_score <= high:
+                is_current = True
+            border = "2px solid #58a6ff" if is_current else "1px solid #30363d"
+            bg = "#0d1f3c" if is_current else "#161b22"
+            st.markdown(
+                f"<div style='background:{bg};border:{border};border-radius:8px;"
+                f"padding:8px 12px;margin:4px 0'>"
+                f"<span style='color:#e6edf3;font-weight:bold'>{label}</span> "
+                f"<span style='color:#8b949e;font-size:0.75em'>({score_range}分)</span><br>"
+                f"<span style='color:#8b949e;font-size:0.8em'>{desc}</span></div>",
+                unsafe_allow_html=True)
 
     st.divider()
+
+    # ── Section 3: 美股 vs 港股 詳細氣氛分析 ─────────────────────────────────
+    st.markdown("### 📡 美股 vs 港股 詳細氣氛")
+    us_col, hk_col = st.columns(2)
+
+    # 美股指標數據
+    vix_v    = safe_get("VIX")
+    vvix_v   = safe_get("VVIX")
+    breadth  = mkt.get("breadth_oversold", 0)
+    dxy_v    = safe_get("DXY")
+    dxy_pct  = safe_get("DXY", "pct")
+    us10y_v  = safe_get("US10Y")
+    hyg_chg  = safe_get("HYG", "chg")
+    spx_rsi  = safe_get("SPX", "rsi")
+
+    # 港股指標數據
+    vhsi_v    = safe_get("VHSI")
+    hsi_rsi_v = safe_get("HSI", "rsi")
+    hsi_pct   = safe_get("HSI", "pct")
+    hsi_vol_r = safe_get("HSI", "vol_ratio")
+    usdhkd_v  = safe_get("USDHKD")
+    hsi_close = mkt.get("HSI", {}).get("close_series", []) if isinstance(mkt.get("HSI"), dict) else []
+    hsi_200bias = 0
+    if hsi_close and len(hsi_close) >= 20:
+        ma20 = sum(hsi_close[-20:]) / 20
+        hsi_200bias = (hsi_close[-1] - ma20) / ma20 * 100 if ma20 else 0
+
+    def indicator_row(label, value, desc, status_color, status_text, fmt=".2f"):
+        return (
+            f"<div style='background:#161b22;border-radius:8px;padding:10px 14px;"
+            f"margin:5px 0;border-left:3px solid {status_color}'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+            f"<span style='color:#e6edf3;font-weight:bold'>{label}</span>"
+            f"<span style='color:{status_color};font-weight:bold'>{format(value, fmt)}</span></div>"
+            f"<div style='color:#8b949e;font-size:0.78em;margin-top:3px'>{desc}</div>"
+            f"<div style='color:{status_color};font-size:0.78em'>{status_text}</div>"
+            f"</div>"
+        )
+
+    with us_col:
+        st.markdown("#### 🇺🇸 美股市場氣氛")
+
+        # VIX
+        vc = "#3fb950" if vix_v >= 30 else ("#d29922" if vix_v >= 20 else "#f85149")
+        vt = "🔥 恐慌區，撈底機會" if vix_v >= 30 else ("⚠️ 警戒區，謹慎操作" if vix_v >= 20 else "😎 低波動，市場貪婪")
+        st.markdown(indicator_row("😱 VIX 恐慌指數", vix_v,
+            "市場預期30日波動率。> 30 = 恐慌撈底區；< 15 = 市場過度貪婪", vc, vt), unsafe_allow_html=True)
+
+        # VVIX
+        vc2 = "#3fb950" if vvix_v >= 120 else ("#d29922" if vvix_v >= 100 else "#8b949e")
+        vt2 = "🌊 極端不穩，恐慌頂部" if vvix_v >= 120 else ("⚠️ 波動加劇" if vvix_v >= 100 else "—正常")
+        st.markdown(indicator_row("🌊 VVIX 波動率的波動率", vvix_v,
+            "VIX本身的波動程度。> 120 代表恐慌極端、市場不確定性達頂峰", vc2, vt2), unsafe_allow_html=True)
+
+        # 市場寬度
+        bc = "#3fb950" if breadth >= 40 else ("#d29922" if breadth >= 20 else "#8b949e")
+        bt = f"🔥 {breadth:.0f}% 股票超賣，系統性拋售" if breadth >= 40 else (f"⚠️ {breadth:.0f}% 超賣" if breadth >= 20 else f"—{breadth:.0f}% 超賣，正常")
+        st.markdown(indicator_row("📊 市場寬度（超賣佔比）", breadth,
+            "S&P500抽樣中RSI<30的股票佔比。> 40% = 系統性拋售，歷史底部區域", bc, bt, ".0f"), unsafe_allow_html=True)
+
+        # 美元指數
+        dc = "#f85149" if dxy_pct >= 75 else ("#d29922" if dxy_pct >= 55 else "#3fb950")
+        dt = "⚠️ 美元強勢，壓制股市" if dxy_pct >= 75 else ("中性" if dxy_pct >= 45 else "✅ 美元偏弱，利好股市")
+        st.markdown(indicator_row("💵 美元指數 DXY", dxy_v,
+            "美元強弱影響資金流向。美元走強通常壓制美股及新興市場；走弱則利好", dc, dt), unsafe_allow_html=True)
+
+        # 美債10年
+        tc = "#f85149" if us10y_v >= 4.5 else ("#d29922" if us10y_v >= 4.0 else "#3fb950")
+        tt = "⚠️ 高息環境，估值承壓" if us10y_v >= 4.5 else ("中性" if us10y_v >= 3.5 else "✅ 低息，資金利好股市")
+        st.markdown(indicator_row("🏦 美債10年息", us10y_v,
+            "無風險回報率基準。快速上升壓制股票估值；下行代表資金回流股市", tc, tt), unsafe_allow_html=True)
+
+        # HYG
+        hc = "#3fb950" if hyg_chg <= -1.5 else ("#d29922" if hyg_chg <= -0.5 else "#8b949e")
+        ht = "🔥 信用市場恐慌" if hyg_chg <= -1.5 else ("⚠️ 信用輕微壓力" if hyg_chg <= -0.5 else "—信用市場穩定")
+        st.markdown(indicator_row("📉 高收益債ETF (HYG) 日變化", hyg_chg,
+            "高收益債與國債的息差。HYG下跌=信用風險上升，通常先於股市反映恐慌", hc, ht, "+.2f"), unsafe_allow_html=True)
+
+        # 標普RSI
+        sr_c = "#3fb950" if spx_rsi < 35 else ("#f85149" if spx_rsi > 65 else "#8b949e")
+        sr_t = "🔥 大盤超賣" if spx_rsi < 35 else ("⚠️ 大盤超買" if spx_rsi > 65 else "—大盤RSI中性")
+        st.markdown(indicator_row("📈 標普500 RSI", spx_rsi,
+            "標普500指數本身的14日RSI。< 30 = 指數超賣；> 70 = 指數超買", sr_c, sr_t), unsafe_allow_html=True)
+
+    with hk_col:
+        st.markdown("#### 🇭🇰 港股市場氣氛")
+
+        # VHSI
+        vh_c = "#3fb950" if vhsi_v >= 30 else ("#d29922" if vhsi_v >= 22 else "#f85149")
+        vh_t = "🔥 港股恐慌，撈底機會" if vhsi_v >= 30 else ("⚠️ 港股波動加劇" if vhsi_v >= 22 else "😎 港股波動低")
+        st.markdown(indicator_row("😱 VHSI 港股波幅指數", vhsi_v,
+            "港版VIX，反映恒指期權隱含波動率。> 30 = 市場恐慌；底部常出現VHSI尖頂", vh_c, vh_t), unsafe_allow_html=True)
+
+        # 恒指RSI日
+        hr_c = "#3fb950" if hsi_rsi_v < 30 else ("#f85149" if hsi_rsi_v > 70 else "#8b949e")
+        hr_t = "🔥 日線超賣，短線撈底" if hsi_rsi_v < 30 else ("⚠️ 日線超買" if hsi_rsi_v > 70 else "—日線RSI中性")
+        st.markdown(indicator_row("📊 恒指 RSI（日線）", hsi_rsi_v,
+            "恒生指數14日RSI。< 30 = 短線超賣，可考慮短線撈底；> 70 = 超買不宜追", hr_c, hr_t), unsafe_allow_html=True)
+
+        # 恒指52周水位
+        hp_c = "#3fb950" if hsi_pct <= 25 else ("#d29922" if hsi_pct <= 45 else "#f85149")
+        hp_t = "🔥 52周低位區，底部機會" if hsi_pct <= 25 else ("⚠️ 中等水位" if hsi_pct <= 55 else "😎 高位區，注意風險")
+        st.markdown(indicator_row("📍 恒指52周水位", hsi_pct,
+            "恒指現價在過去52周高低點中的位置百分比。< 25% = 處於年度低位區", hp_c, hp_t, ".1f"), unsafe_allow_html=True)
+
+        # 恒指成交量比
+        hv_c = "#3fb950" if hsi_vol_r >= 1.5 else ("#8b949e" if hsi_vol_r >= 0.8 else "#d29922")
+        hv_t = "🔥 放量，資金介入" if hsi_vol_r >= 1.5 else ("—量能正常" if hsi_vol_r >= 0.8 else "⚠️ 縮量，觀望氣氛重")
+        st.markdown(indicator_row("📦 恒指成交量比（vs20日均）", hsi_vol_r,
+            "今日成交量與20日均量比值。> 1.5 = 放量，資金介入；底部爆量止跌是真底部信號", hv_c, hv_t, ".2f"), unsafe_allow_html=True)
+
+        # 距20日均線乖離
+        hb_c = "#3fb950" if hsi_200bias <= -8 else ("#f85149" if hsi_200bias >= 8 else "#8b949e")
+        hb_t = "🔥 嚴重超跌，均值回歸機率高" if hsi_200bias <= -8 else ("⚠️ 偏高，注意回調" if hsi_200bias >= 8 else "—在均線附近")
+        st.markdown(indicator_row("📐 恒指20日均線乖離率", hsi_200bias,
+            "現價與20日均線偏離程度。< -8% = 嚴重超跌，歷史上均值回歸拉力極強", hb_c, hb_t, "+.1f"), unsafe_allow_html=True)
+
+        # USDHKD
+        hd_c = "#f85149" if usdhkd_v >= 7.83 else ("#d29922" if usdhkd_v >= 7.80 else "#3fb950")
+        hd_t = "⚠️ 接近弱方兌換保證，資金外流" if usdhkd_v >= 7.83 else ("注意港元走弱" if usdhkd_v >= 7.80 else "✅ 港元穩定")
+        st.markdown(indicator_row("💱 港元匯率 USDHKD", usdhkd_v,
+            "港元兌美元。接近7.85弱方兌換保證 = 資金外流壓力大，不利港股；越低越穩定", hd_c, hd_t, ".4f"), unsafe_allow_html=True)
+
+        # 北水替代（港股通ETF 3032.HK）
+        try:
+            df_3032 = yf.download("3032.HK", period="5d", auto_adjust=True, progress=False)
+            if isinstance(df_3032.columns, pd.MultiIndex):
+                df_3032.columns = df_3032.columns.get_level_values(0)
+            df_3032.columns = [c.lower() for c in df_3032.columns]
+            if not df_3032.empty and len(df_3032) >= 2:
+                nw_chg = (float(df_3032["close"].iloc[-1]) - float(df_3032["close"].iloc[-2])) / float(df_3032["close"].iloc[-2]) * 100
+                nw_c = "#3fb950" if nw_chg >= 0.3 else ("#f85149" if nw_chg <= -0.3 else "#8b949e")
+                nw_t = "✅ 北水淨流入（看多港股）" if nw_chg >= 0.3 else ("⚠️ 北水淨流出" if nw_chg <= -0.3 else "—北水小幅變動")
+                st.markdown(indicator_row("🌊 北水資金方向（港股通ETF替代）", nw_chg,
+                    "以港股通ETF(3032.HK)升跌估算北水動向。連續流入=內地資金撐盤，底部支撐強", nw_c, nw_t, "+.2f"), unsafe_allow_html=True)
+        except:
+            pass
+
+    st.divider()
+
+    # ── Section 4: K 線圖 ──────────────────────────────────────────────────────
+    st.markdown("### 📈 指數走勢圖（近60日）")
     col_a, col_b = st.columns(2)
-    for col, tk, title in [(col_a, "^GSPC", "🇺🇸 標普500 (60日)"),
-                            (col_b, "^HSI",  "🇭🇰 恒生指數 (60日)")]:
+    for col, tk, title in [(col_a, "^GSPC", "🇺🇸 標普500"),
+                            (col_b, "^HSI",  "🇭🇰 恒生指數")]:
         with col:
             df_idx = fetch_ohlcv(tk, period="3mo")
-            if df_idx is not None:
-                fig = go.Figure(go.Candlestick(
+            if df_idx is not None and len(df_idx) > 5:
+                sma20_idx = df_idx["close"].rolling(20).mean()
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
                     x=df_idx.index,
                     open=df_idx["open"], high=df_idx["high"],
                     low=df_idx["low"],  close=df_idx["close"],
                     increasing_line_color="#3fb950",
-                    decreasing_line_color="#f85149"))
-                fig.update_layout(title=title, height=300,
+                    decreasing_line_color="#f85149",
+                    name="K線"))
+                fig.add_trace(go.Scatter(
+                    x=df_idx.index, y=sma20_idx, mode="lines",
+                    line=dict(color="#f0883e", width=1.5), name="MA20"))
+                fig.update_layout(
+                    title=title, height=320,
                     paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
                     font=dict(color="#e6edf3"),
                     xaxis_rangeslider_visible=False,
-                    margin=dict(l=5,r=5,t=40,b=5))
-                fig.update_xaxes(gridcolor="#21262d")
-                fig.update_yaxes(gridcolor="#21262d")
-                st.plotly_chart(fig, use_container_width=True)
+                    legend=dict(bgcolor="#161b22"),
+                    margin=dict(l=5, r=5, t=40, b=5))
+                fig.update_xaxes(
 
 # ══ TAB 2 ════════════════════════════════════════════════════════════════════
 with tab2:
