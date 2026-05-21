@@ -336,8 +336,8 @@ with tab1:
                     font=dict(color="#e6edf3"),
                     xaxis_rangeslider_visible=False,
                     margin=dict(l=5,r=5,t=40,b=5))
-                fig.update_xaxis(gridcolor="#21262d")
-                fig.update_yaxis(gridcolor="#21262d")
+                fig.update_xaxes(gridcolor="#21262d")
+                fig.update_yaxes(gridcolor="#21262d")
                 st.plotly_chart(fig, use_container_width=True)
 
 # ══ TAB 2 ════════════════════════════════════════════════════════════════════
