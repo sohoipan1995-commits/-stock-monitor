@@ -369,50 +369,126 @@ with tab1:
 
     @st.cache_data(ttl=1800, show_spinner=False)
     def fetch_market_sentiment():
-        result = {}
-        macro_map = {
-            "VIX":"^VIX","VVIX":"^VVIX","SPX":"^GSPC","HSI":"^HSI",
-            "DXY":"DX-Y.NYB","US10Y":"^TNX","VHSI":"^VHSI",
-            "HYG":"HYG","USDHKD":"USDHKD=X",
-        }
-        for name,tk in macro_map.items():
-            try:
-                df = yf.download(tk, period="1y", auto_adjust=True, progress=False)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                df.columns = [c.lower() for c in df.columns]
-                if df.empty or len(df)<5: continue
-                c   = float(df["close"].iloc[-1])
-                p   = float(df["close"].iloc[-2])
-                hi  = float(df["high"].max())
-                lo  = float(df["low"].min())
-                chg = (c-p)/p*100
-                pct = (c-lo)/(hi-lo)*100 if hi!=lo else 50
-                result[name] = {
-                    "val":c,"chg":chg,"pct":pct,"hi":hi,"lo":lo,
-                    "rsi":float(calc_rsi(df["close"]).iloc[-1]),
-                    "close_series":df["close"].tolist()[-60:],
-                    "vol_ratio": (float(df["volume"].iloc[-1]) / float(df["volume"].rolling(20).mean().iloc[-1])
-    if ("volume" in df.columns and len(df) >= 20
-        and float(df["volume"].rolling(20).mean().iloc[-1]) > 0) else 1.0),
-                }
-            except: pass
+        @st.cache_data(ttl=1800, show_spinner=False)
+def fetch_market_sentiment():
+    result = {}
+    price_tickers = {
+        "VIX":"^VIX","VVIX":"^VVIX","SPX":"^GSPC","HSI":"^HSI",
+        "DXY":"DX-Y.NYB","US10Y":"^TNX","VHSI":"^VHSI",
+        "HYG":"HYG","USDHKD":"USDHKD=X",
+    }
+    volume_tickers = {
+        "VIX":"VXX","SPX":"SPY","HSI":"2800.HK",
+        "DXY":"UUP","US10Y":"TLT","HYG":"HYG",
+        "VHSI":None,"VVIX":None,"USDHKD":None,
+    }
 
-        sp500_sample = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
-                        "JPM","BAC","XOM","JNJ","UNH","PG","AVGO","ORCL",
-                        "HD","MA","V","COST","MRK"]
-        oversold_count = 0
-        for tk in sp500_sample:
+    for name, tk in price_tickers.items():
+        try:
+            df = yf.download(tk, period="1y", auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.lower() for c in df.columns]
+            if df.empty or len(df) < 5:
+                continue
+
+            # 用 dropna 確保取到真實數值
+            close_clean = df["close"].dropna()
+            if len(close_clean) < 2:
+                continue
+
+            c  = float(close_clean.iloc[-1])
+            p  = float(close_clean.iloc[-2])
+            hi = float(df["high"].dropna().max())
+            lo = float(df["low"].dropna().min())
+
+            if hi <= 0:
+                continue
+            # c=0 時用前一日代替（非交易時段）
+            if c <= 0:
+                try:
+                    c = float(close_clean.iloc[-2])
+                    if c <= 0:
+                        continue
+                except:
+                    continue
+
+            chg = (c - p) / p * 100 if p != 0 else 0
+            pct = (c - lo) / (hi - lo) * 100 if (hi - lo) != 0 else 50
+
             try:
-                df = yf.download(tk, period="3mo", auto_adjust=True, progress=False)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                df.columns = [c.lower() for c in df.columns]
-                if df.empty or len(df)<20: continue
-                if float(calc_rsi(df["close"]).iloc[-1])<30: oversold_count+=1
-            except: pass
-        result["breadth_oversold"] = oversold_count/len(sp500_sample)*100
-        return result
+                rsi_val = float(calc_rsi(close_clean).iloc[-1])
+                rsi_val = rsi_val if pd.notna(rsi_val) else 50.0
+            except:
+                rsi_val = 50.0
+
+            # 成交量從 ETF 替代源抓取
+            vol_ratio = 1.0
+            vol_etk = volume_tickers.get(name)
+            if vol_etk:
+                try:
+                    dv = yf.download(vol_etk, period="2mo", auto_adjust=True, progress=False)
+                    if isinstance(dv.columns, pd.MultiIndex):
+                        dv.columns = dv.columns.get_level_values(0)
+                    dv.columns = [c2.lower() for c2 in dv.columns]
+                    if not dv.empty and "volume" in dv.columns and len(dv) >= 20:
+                        vol_series = dv["volume"].dropna()
+                        vm = float(vol_series.rolling(20).mean().iloc[-1])
+                        vn = float(vol_series.iloc[-1])
+                        if vm > 0 and vn > 0:
+                            vol_ratio = round(vn / vm, 2)
+                        elif vm > 0 and vn == 0:
+                            # 非交易時段成交量為0，用前一日
+                            try:
+                                vn_prev = float(vol_series.iloc[-2])
+                                if vn_prev > 0:
+                                    vol_ratio = round(vn_prev / vm, 2)
+                            except:
+                                vol_ratio = 1.0
+                except:
+                    vol_ratio = 1.0
+
+            result[name] = {
+                "val":          c,
+                "chg":          chg,
+                "pct":          pct,
+                "hi":           hi,
+                "lo":           lo,
+                "rsi":          rsi_val,
+                "close_series": close_clean.tolist()[-60:],
+                "vol_ratio":    vol_ratio,
+                "vol_source":   vol_etk if vol_etk else "N/A",
+            }
+        except:
+            pass
+
+    # 市場寬度：S&P500 抽樣 RSI<30 佔比
+    sp500_sample = [
+        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
+        "JPM","BAC","XOM","JNJ","UNH","PG","AVGO","ORCL",
+        "HD","MA","V","COST","MRK"
+    ]
+    oversold_count = 0
+    valid_count    = 0
+    for tk in sp500_sample:
+        try:
+            df = yf.download(tk, period="6mo", auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.lower() for c in df.columns]
+            if df.empty or len(df) < 20:
+                continue
+            rsi_v = float(calc_rsi(df["close"].dropna()).iloc[-1])
+            if pd.notna(rsi_v):
+                valid_count += 1
+                if rsi_v < 30:
+                    oversold_count += 1
+        except:
+            pass
+
+    result["breadth_oversold"]    = (oversold_count / valid_count * 100) if valid_count > 0 else 0
+    result["breadth_valid_count"] = valid_count
+    return result
 
     with st.spinner("載入市場氣氛數據..."):
         mkt = fetch_market_sentiment()
@@ -554,13 +630,24 @@ with tab1:
         hsi_20bias = (hsi_close[-1]-ma20)/ma20*100 if ma20 else 0
 
     def ind_row(label, value, desc, sc, st_text, fmt=".2f"):
-        return (f"<div style='background:#161b22;border-radius:8px;padding:10px 14px;"
-                f"margin:5px 0;border-left:3px solid {sc}'>"
-                f"<div style='display:flex;justify-content:space-between'>"
-                f"<span style='color:#e6edf3;font-weight:bold'>{label}</span>"
-                f"<span style='color:{sc};font-weight:bold'>{format(value,fmt)}</span></div>"
-                f"<div style='color:#8b949e;font-size:0.77em;margin-top:2px'>{desc}</div>"
-                f"<div style='color:{sc};font-size:0.77em'>{st_text}</div></div>")
+    try:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            display_val = "N/A"
+        elif value == 0 and fmt not in ("+.2f","+.1f",".0f",".2f",".4f",".1f"):
+            display_val = "N/A"
+        else:
+            display_val = format(value, fmt)
+    except:
+        display_val = "N/A"
+    return (
+        f"<div style='background:#161b22;border-radius:8px;padding:10px 14px;"
+        f"margin:5px 0;border-left:3px solid {sc}'>"
+        f"<div style='display:flex;justify-content:space-between'>"
+        f"<span style='color:#e6edf3;font-weight:bold'>{label}</span>"
+        f"<span style='color:{sc};font-weight:bold'>{display_val}</span></div>"
+        f"<div style='color:#8b949e;font-size:0.77em;margin-top:2px'>{desc}</div>"
+        f"<div style='color:{sc};font-size:0.77em'>{st_text}</div></div>"
+    )
 
     with us_col:
         st.markdown("#### 🇺🇸 美股市場氣氛")
