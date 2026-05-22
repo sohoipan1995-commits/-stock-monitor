@@ -1149,3 +1149,77 @@ with tab4:
 
         # MACD
         hist
+ # MACD
+        hist_colors = ["#3fb950" if v>=0 else "#f85149" for v in hist_ch.fillna(0)]
+        fig_tech.add_trace(go.Bar(x=df_ch.index,y=hist_ch,marker_color=hist_colors,
+            name="MACD Hist",showlegend=False),row=4,col=1)
+        fig_tech.add_trace(go.Scatter(x=df_ch.index,y=macd_ch,mode="lines",
+            line=dict(color="#58a6ff",width=1.2),name="MACD"),row=4,col=1)
+        fig_tech.add_trace(go.Scatter(x=df_ch.index,y=sig_ch,mode="lines",
+            line=dict(color="#f0883e",width=1.2),name="Signal"),row=4,col=1)
+        fig_tech.add_hline(y=0,line_dash="dash",line_color="#8b949e",row=4,col=1)
+
+        # KDJ
+        K_ch, D_ch, J_ch = calc_kdj(df_ch)
+        fig_tech.add_trace(go.Scatter(x=df_ch.index,y=K_ch,mode="lines",
+            line=dict(color="#3fb950",width=1.2),name="K"),row=5,col=1)
+        fig_tech.add_trace(go.Scatter(x=df_ch.index,y=D_ch,mode="lines",
+            line=dict(color="#f85149",width=1.2),name="D"),row=5,col=1)
+        fig_tech.add_trace(go.Scatter(x=df_ch.index,y=J_ch,mode="lines",
+            line=dict(color="#d29922",width=1.2),name="J"),row=5,col=1)
+        for y in [20,80]:
+            fig_tech.add_hline(y=y,line_dash="dash",line_color="#8b949e",row=5,col=1)
+
+        fig_tech.update_layout(
+            title=f"{tk_chart} 技術分析（K線 / 成交量 / RSI日+周 / MACD / KDJ）",
+            height=900,paper_bgcolor="#0d1117",plot_bgcolor="#0d1117",
+            font=dict(color="#e6edf3"),xaxis_rangeslider_visible=False,
+            legend=dict(bgcolor="#161b22",bordercolor="#30363d"),
+            margin=dict(l=10,r=10,t=50,b=10)
+        )
+        for i in range(1,6):
+            fig_tech.update_xaxes(gridcolor="#21262d",row=i,col=1)
+            fig_tech.update_yaxes(gridcolor="#21262d",row=i,col=1)
+
+        st.plotly_chart(fig_tech, use_container_width=True)
+
+        # 評分 + 指標總結
+        short_s,mid_s,sigs = score_stock(df_ch)
+        label,_ = signal_label(short_s,mid_s)
+        close_v = float(df_ch["close"].iloc[-1])
+        rsi_now = float(calc_rsi(df_ch["close"]).iloc[-1])
+        rsi_w_now = float(calc_rsi(df_ch["close"],70).iloc[-1])
+
+        c1,c2,c3,c4,c5,c6 = st.columns(6)
+        c1.metric("短線評分",f"{short_s}/100")
+        c2.metric("中線評分",f"{mid_s}/100")
+        c3.metric("信號",label)
+        c4.metric("日線RSI",f"{rsi_now:.1f}")
+        c5.metric("周線RSI(模擬)",f"{rsi_w_now:.1f}")
+        c6.metric("目標+20% / 止損-8%",f"{round(close_v*1.2,3)} / {round(close_v*0.92,3)}")
+
+        if sigs:
+            st.markdown("**觸發指標：** " + " ｜ ".join(sigs))
+
+        # 雙周期RSI共振說明
+        if rsi_now<35 and 28<=rsi_w_now<=50:
+            st.markdown(
+                "<div style='background:#0d2818;border:1px solid #238636;border-radius:8px;"
+                "padding:12px;margin-top:8px'>"
+                "<b style='color:#3fb950'>⭐ 雙周期RSI共振信號</b><br>"
+                "<span style='color:#e6edf3'>日線RSI已超賣，同時周線RSI處於30-50合理區間，"
+                "代表這不只是短暫彈跳，而是有中線底部支撐的真實超賣機會。</span></div>",
+                unsafe_allow_html=True)
+        elif rsi_w_now>60 and rsi_now<35:
+            st.markdown(
+                "<div style='background:#1c1a00;border:1px solid #9e6a03;border-radius:8px;"
+                "padding:12px;margin-top:8px'>"
+                "<b style='color:#d29922'>⚠️ 注意：周線RSI仍強</b><br>"
+                "<span style='color:#e6edf3'>日線雖然超賣，但周線RSI仍在60以上，"
+                "代表下跌趨勢未完，日線超賣可能只是短暫彈跳，建議等周線RSI回落至50以下再操作。</span></div>",
+                unsafe_allow_html=True)
+    else:
+        st.warning("找不到足夠數據，請確認代碼（港股用 0700.HK 格式）。")
+
+st.divider()
+st.caption("⚠️ 本系統僅供技術分析參考，不構成投資建議。數據來自 Yahoo Finance，存在延遲。投資涉及風險，買賣前請自行評估。")
