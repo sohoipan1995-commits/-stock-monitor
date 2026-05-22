@@ -1103,33 +1103,33 @@ with tab3:
         df_bubble = df_retrace[df_retrace["距Fib%"] != 0].copy()
         if not df_bubble.empty:
             bubble_colors = df_bubble["回撤深度%"].tolist()
-            fig_bubble = go.Figure(go.Scatter(
-                x=df_bubble["回撤深度%"],
-                y=df_bubble["距Fib%"],
-                mode="markers+text",
-                text=df_bubble["代碼"],
-                textposition="top center",
-                textfont=dict(color="#e6edf3", size=10),
-                marker=dict(
-                    size=14,
-                    color=bubble_colors,
-                    colorscale=[[0, "#3fb950"], [0.5, "#d29922"], [1, "#f85149"]],
-                    reversescale=True,
-                    showscale=True,
-                    colorbar=dict(
-                        title="回撤%",
-                        tickfont=dict(color="#e6edf3"),
-                        titlefont=dict(color="#e6edf3")
-                    ),
-                    line=dict(color="#30363d", width=1)
-                ),
-                hovertemplate=(
-                    "<b>%{text}</b><br>"
-                    "回撤深度: %{x:.1f}%<br>"
-                    "距Fib支撐: %{y:.1f}%<br>"
-                    "<extra></extra>"
-                )
-            ))
+           fig_bubble = go.Figure(go.Scatter(
+    x=df_bubble["回撤深度%"],
+    y=df_bubble["距Fib%"],
+    mode="markers+text",
+    text=df_bubble["代碼"],
+    textposition="top center",
+    textfont=dict(color="#e6edf3", size=10),
+    marker=dict(
+        size=14,
+        color=bubble_colors,
+        colorscale=[[0, "#3fb950"], [0.5, "#d29922"], [1, "#f85149"]],
+        reversescale=True,
+        showscale=True,
+        colorbar=dict(
+            title=dict(text="回撤%", font=dict(color="#e6edf3")),
+            tickcolor="#e6edf3",
+            tickfont=dict(color="#e6edf3")
+        ),
+        line=dict(color="#30363d", width=1)
+    ),
+    hovertemplate=(
+        "<b>%{text}</b><br>"
+        "回撤深度: %{x:.1f}%<br>"
+        "距Fib支撐: %{y:.1f}%<br>"
+        "<extra></extra>"
+    )
+))
             fig_bubble.add_hline(y=-3, line_dash="dot", line_color="#3fb950",
                                   annotation_text="⚡ 即將到達支撐位(3%內)",
                                   annotation_font_color="#3fb950")
