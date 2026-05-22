@@ -308,8 +308,9 @@ def fetch_macro():
                 "val":c,"chg":chg,"pct":pct,"hi":hi,"lo":lo,
                 "rsi":float(calc_rsi(df["close"]).iloc[-1]),
                 "close_series":df["close"].tolist()[-60:],
-                "vol_ratio":float(df["volume"].iloc[-1])/float(df["volume"].rolling(20).mean().iloc[-1])
-                    if "volume" in df.columns and len(df)>=20 else 1
+                "vol_ratio": (float(df["volume"].iloc[-1]) / float(df["volume"].rolling(20).mean().iloc[-1])
+    if ("volume" in df.columns and len(df) >= 20
+        and float(df["volume"].rolling(20).mean().iloc[-1]) > 0) else 1.0),
             }
     return result
 
@@ -424,8 +425,9 @@ with tab1:
                     "val":c,"chg":chg,"pct":pct,"hi":hi,"lo":lo,
                     "rsi":float(calc_rsi(df["close"]).iloc[-1]),
                     "close_series":df["close"].tolist()[-60:],
-                    "vol_ratio":float(df["volume"].iloc[-1])/float(df["volume"].rolling(20).mean().iloc[-1])
-                        if "volume" in df.columns else 1
+                    "vol_ratio": (float(df["volume"].iloc[-1]) / float(df["volume"].rolling(20).mean().iloc[-1])
+    if ("volume" in df.columns and len(df) >= 20
+        and float(df["volume"].rolling(20).mean().iloc[-1]) > 0) else 1.0),
                 }
             except: pass
 
