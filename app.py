@@ -1148,8 +1148,6 @@ with tab4:
             fig_tech.add_hline(y=y,line_dash="dash",line_color=c,row=3,col=1)
 
         # MACD
-        hist
- # MACD
         hist_colors = ["#3fb950" if v>=0 else "#f85149" for v in hist_ch.fillna(0)]
         fig_tech.add_trace(go.Bar(x=df_ch.index,y=hist_ch,marker_color=hist_colors,
             name="MACD Hist",showlegend=False),row=4,col=1)
