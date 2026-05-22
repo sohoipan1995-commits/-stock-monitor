@@ -690,7 +690,7 @@ with tab2:
         tickers = raw if raw else US_WATCHLIST
 
     # ③ VIX 氣氛濾網
-    macro_now = fetch_macro()
+    macro_now = fetch_market_sentiment()
     vix_now = macro_now.get("VIX",{}).get("val",20) if isinstance(macro_now.get("VIX"),dict) else 20
 
     if vix_now>=30:
