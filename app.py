@@ -879,7 +879,6 @@ with tab2:
         st.dataframe(table_df.sort_values("短線分", ascending=False), use_container_width=True, hide_index=True)
 
 with tab3:
-    # ── 原有的回撤計算器 ──────────────────────────────────────────────────────
     st.subheader("📐 回撤 & 斐波那契計算器")
     col_in1, col_in2, col_in3 = st.columns(3)
     with col_in1:
@@ -968,7 +967,6 @@ with tab3:
 
     st.divider()
 
-    # ── 新增：全觀察名單回撤雷達儀表板 ──────────────────────────────────────
     st.subheader("📡 全觀察名單 回撤深度儀表板")
     st.markdown("自動掃描所有觀察股，計算每隻股票從52周高位的回撤深度，及**即將到達的下一個斐波那契支撐位**。")
 
@@ -993,11 +991,9 @@ with tab3:
                 lo52 = float(df["low"].iloc[-252:].min()) if len(df) >= 252 else float(df["low"].min())
                 drop_pct = (close_v - hi52) / hi52 * 100
 
-                # 斐波那契支撐位（從52W低到52W高）
                 fibs = fib_levels(lo52, hi52)
                 fib_values = sorted(fibs.items(), key=lambda x: float(x[0].replace("%", "")), reverse=True)
 
-                # 找下一個未跌穿的斐波那契位（最近在當前價以下）
                 next_fib_label = "—"
                 next_fib_price = None
                 next_fib_pct_away = None
@@ -1012,7 +1008,6 @@ with tab3:
                     else:
                         passed_fibs.append(label)
 
-                # 下一個標準回撤目標（未達到的最近一個）
                 next_drop_label = "—"
                 next_drop_price = None
                 next_drop_pct_away = None
@@ -1049,21 +1044,21 @@ with tab3:
     if retrace_data:
         df_retrace = pd.DataFrame(retrace_data)
 
-        # ── 圖表一：回撤深度橫向條形圖 ─────────────────────────────────────
+        # ── 圖表一：回撤深度橫向條形圖 ──────────────────────────────────────
         st.markdown("#### 📉 各股從52周高位回撤深度")
-        st.caption("橫條越長代表從高位跌得越深。綠色 = 已跌 ≥30%（深度超跌），黃色 = 跌10-30%，灰色 = 跌幅小。")
+        st.caption("橫條越長代表從高位跌得越深。🟢 綠色 ≥30% 超跌，🟡 黃色 15-30%，🟠 橙色 10-15%。")
 
         df_sorted = df_retrace.sort_values("回撤深度%")
         bar_colors = []
         for v in df_sorted["回撤深度%"]:
             if v <= -30:
-                bar_colors.append("#3fb950")  # 深跌=綠=機會
+                bar_colors.append("#3fb950")
             elif v <= -15:
-                bar_colors.append("#d29922")  # 中等回撤=黃
+                bar_colors.append("#d29922")
             elif v <= -10:
-                bar_colors.append("#f0883e")  # 輕微=橙
+                bar_colors.append("#f0883e")
             else:
-                bar_colors.append("#8b949e")  # 高位=灰
+                bar_colors.append("#8b949e")
 
         fig_bar_ret = go.Figure(go.Bar(
             x=df_sorted["回撤深度%"],
@@ -1096,46 +1091,52 @@ with tab3:
 
         st.divider()
 
-        # ── 圖表二：距下一個斐波那契支撐還有多遠（泡泡圖）──────────────────
+        # ── 圖表二：泡泡圖（移除 colorbar，改用 text label）────────────────
         st.markdown("#### 🌀 距離下一個斐波那契支撐位的距離")
-        st.caption("氣泡越靠左代表已跌越深；X軸=回撤深度，Y軸=距下一個Fib支撐位的百分比。接近0%代表即將到達支撐位。")
+        st.caption("X軸=回撤深度，Y軸=距下一個Fib支撐位的百分比。接近0%代表即將到達支撐位。")
 
         df_bubble = df_retrace[df_retrace["距Fib%"] != 0].copy()
         if not df_bubble.empty:
-            bubble_colors = df_bubble["回撤深度%"].tolist()
-           fig_bubble = go.Figure(go.Scatter(
-    x=df_bubble["回撤深度%"],
-    y=df_bubble["距Fib%"],
-    mode="markers+text",
-    text=df_bubble["代碼"],
-    textposition="top center",
-    textfont=dict(color="#e6edf3", size=10),
-    marker=dict(
-        size=14,
-        color=bubble_colors,
-        colorscale=[[0, "#3fb950"], [0.5, "#d29922"], [1, "#f85149"]],
-        reversescale=True,
-        showscale=True,
-        colorbar=dict(
-            title=dict(text="回撤%", font=dict(color="#e6edf3")),
-            tickcolor="#e6edf3",
-            tickfont=dict(color="#e6edf3")
-        ),
-        line=dict(color="#30363d", width=1)
-    ),
-    hovertemplate=(
-        "<b>%{text}</b><br>"
-        "回撤深度: %{x:.1f}%<br>"
-        "距Fib支撐: %{y:.1f}%<br>"
-        "<extra></extra>"
-    )
-))
-            fig_bubble.add_hline(y=-3, line_dash="dot", line_color="#3fb950",
-                                  annotation_text="⚡ 即將到達支撐位(3%內)",
-                                  annotation_font_color="#3fb950")
-            fig_bubble.add_vline(x=-30, line_dash="dash", line_color="#3fb950",
-                                  annotation_text="深度超跌區",
-                                  annotation_font_color="#3fb950")
+            bubble_colors = []
+            for v in df_bubble["回撤深度%"].tolist():
+                if v <= -30:
+                    bubble_colors.append("#3fb950")
+                elif v <= -15:
+                    bubble_colors.append("#d29922")
+                elif v <= -10:
+                    bubble_colors.append("#f0883e")
+                else:
+                    bubble_colors.append("#8b949e")
+
+            fig_bubble = go.Figure(go.Scatter(
+                x=df_bubble["回撤深度%"],
+                y=df_bubble["距Fib%"],
+                mode="markers+text",
+                text=df_bubble["代碼"],
+                textposition="top center",
+                textfont=dict(color="#e6edf3", size=10),
+                marker=dict(
+                    size=14,
+                    color=bubble_colors,
+                    line=dict(color="#30363d", width=1)
+                ),
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "回撤深度: %{x:.1f}%<br>"
+                    "距Fib支撐: %{y:.1f}%<br>"
+                    "<extra></extra>"
+                )
+            ))
+            fig_bubble.add_hline(
+                y=-3, line_dash="dot", line_color="#3fb950",
+                annotation_text="⚡ 即將到達支撐位(3%內)",
+                annotation_font_color="#3fb950"
+            )
+            fig_bubble.add_vline(
+                x=-30, line_dash="dash", line_color="#3fb950",
+                annotation_text="深度超跌區",
+                annotation_font_color="#3fb950"
+            )
             fig_bubble.update_layout(
                 title="回撤深度 vs 距斐波那契支撐位距離",
                 height=480,
@@ -1149,9 +1150,9 @@ with tab3:
 
         st.divider()
 
-        # ── 圖表三：回撤里程碑進度條（熱力圖）───────────────────────────────
+        # ── 圖表三：熱力圖 ────────────────────────────────────────────────────
         st.markdown("#### 🗺️ 回撤里程碑熱力圖")
-        st.caption("每格代表該股票是否已達到對應的回撤/Fib里程碑。🟢已達到 / ⬜未達到")
+        st.caption("每格代表該股票是否已達到對應的回撤/Fib里程碑。✅ 已達到 ／ · 未達到")
 
         milestones = ["-10%", "-20%", "-25%", "-30%", "Fib23.6%", "Fib38.2%", "Fib50%", "Fib61.8%", "Fib78.6%"]
         heat_matrix = []
@@ -1172,9 +1173,11 @@ with tab3:
                     heat_row.append(1 if cv <= fib_price else 0)
             heat_matrix.append(heat_row)
 
-        df_heat = pd.DataFrame(heat_matrix,
-                               index=[r["代碼"] for r in retrace_data],
-                               columns=milestones)
+        df_heat = pd.DataFrame(
+            heat_matrix,
+            index=[r["代碼"] for r in retrace_data],
+            columns=milestones
+        )
 
         fig_heat = go.Figure(go.Heatmap(
             z=df_heat.values,
@@ -1201,37 +1204,27 @@ with tab3:
 
         # ── 詳細數據表 ────────────────────────────────────────────────────────
         st.markdown("#### 📋 回撤詳細數據表")
-        st.caption("按「回撤深度%」排序，數字越小代表跌得越深。")
-
         display_cols = ["代碼", "現價", "52W高", "回撤深度%",
                         "下一回撤目標", "目標價", "距目標%",
                         "下一Fib支撐", "Fib支撐價", "距Fib%", "已穿Fib"]
         df_display = df_retrace[display_cols].sort_values("回撤深度%")
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-        def color_retrace(val):
-            if isinstance(val, (int, float)):
-                if val <= -30: return "color: #3fb950; font-weight: bold"
-                if val <= -15: return "color: #d29922"
-                if val >= -5:  return "color: #f85149"
-            return "color: #e6edf3"
-
-        st.dataframe(
-            df_display.style.applymap(color_retrace, subset=["回撤深度%", "距目標%", "距Fib%"]),
-            use_container_width=True,
-            hide_index=True
-        )
-
-        # ── 即將到達Fib支撐位警示 ────────────────────────────────────────────
         st.divider()
+
+        # ── 即將到達Fib支撐警示 ───────────────────────────────────────────────
         st.markdown("#### ⚡ 即將到達斐波那契支撐位（距離 ≤ 5%）")
-        alert_stocks = [r for r in retrace_data
-                        if isinstance(r["距Fib%"], (int, float)) and -5 <= r["距Fib%"] <= 0]
+        alert_stocks = [
+            r for r in retrace_data
+            if isinstance(r["距Fib%"], (int, float)) and -5 <= r["距Fib%"] <= 0
+        ]
         if alert_stocks:
             a_cols = st.columns(min(len(alert_stocks), 4))
             for i, r in enumerate(alert_stocks):
                 with a_cols[i % 4]:
                     st.markdown(f"""
-                    <div style='background:#0d2818;border:1px solid #238636;border-radius:10px;padding:14px;text-align:center;margin:4px'>
+                    <div style='background:#0d2818;border:1px solid #238636;border-radius:10px;
+                    padding:14px;text-align:center;margin:4px'>
                       <div style='font-size:1.3em;font-weight:bold;color:#3fb950'>{r["代碼"]}</div>
                       <div style='color:#8b949e;font-size:0.8em'>現價：{r["現價"]}</div>
                       <div style='color:#e6edf3'>Fib {r["下一Fib支撐"]} 支撐</div>
