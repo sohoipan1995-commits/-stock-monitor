@@ -917,7 +917,7 @@ with tab2:
                     fib_df = pd.DataFrame(list(r["_fib"].items()),columns=["比率","價位"])
                     fib_df["狀態"] = fib_df["價位"].apply(
                         lambda x: "◀ 當前附近" if abs(x-r["現價"])/r["現價"]<0.03 else "")
-                      st.dataframe(fib_df, use_container_width=True, hide_index=True)
+                    st.dataframe(fib_df, use_container_width=True, hide_index=True)
 
                 st.markdown(f"**🎯 目標+20%：`{round(r['現價']*1.2,3)}`  ｜  止損-8%：`{round(r['現價']*0.92,3)}`**")
 
