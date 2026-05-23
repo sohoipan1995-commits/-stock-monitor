@@ -520,28 +520,29 @@ with tab1:
         ("US10Y","🏦 美債10年息"),("DXY","💵 美元指數"),
         ("HYG","📉 高收益債"),("VHSI","🇭🇰 港股波幅"),
     ]
-    for row_items in [kpi_items[:4], kpi_items[4:]]:
+        for row_items in [kpi_items[:4], kpi_items[4:]]:
         cols_kpi = st.columns(4)
         for i,(key,label) in enumerate(row_items):
-            val = safe_get(key); chg = safe_get(key,"chg"); pct = safe_get(key,"pct")
+            val = safe_get(key)
+            chg = safe_get(key,"chg")
+            pct = safe_get(key,"pct")
             color = "#3fb950" if chg>=0 else "#f85149"
             arrow = "▲" if chg>=0 else "▼"
+            emoji = label.split()[0]
+            name  = ' '.join(label.split()[1:])
+            val_str = f"{val:.2f}"
+            chg_str = f"{chg:+.2f}%"
+            pct_str = f"{pct:.0f}%"
             with cols_kpi[i]:
-                st.markdown(f"""
-                <div class="metric-card">
-                <div style="font-size:1em">{label.split()[0]}</div>
-                <div style="color:#8b949e;font-size:0.7em">{' '.join(label.split()[1:])}</div>
-                <div style="font-size:1.1em;font-weight:bold;color:#e6edf3;margin:4px 0">{val:.2f}</div>
-                <div style="color:{color};font-size:0.82em">{arrow} {chg:+.2f}%</div>
-                <div style="color:#8b949e;font-size:0.68em">52W:{pct:.0f}%</div>
-                </div>""", unsafe_allow_html=True)
-            <div class="metric-card">
-              <div style="font-size:1em">{label.split()[0]}</div>
-              <div style="color:#8b949e;font-size:0.7em">{' '.join(label.split()[1:])}</div>
-              <div style="font-size:1.1em;font-weight:bold;color:#e6edf3;margin:4px 0">{val:.2f}</div>
-              <div style="color:{color};font-size:0.82em">{arrow} {chg:+.2f}%</div>
-              <div style="color:#8b949e;font-size:0.68em">52W:{pct:.0f}%</div>
-            </div>""", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='metric-card'>"
+                    f"<div style='font-size:1em'>{emoji}</div>"
+                    f"<div style='color:#8b949e;font-size:0.7em'>{name}</div>"
+                    f"<div style='font-size:1.1em;font-weight:bold;color:#e6edf3;margin:4px 0'>{val_str}</div>"
+                    f"<div style='color:{color};font-size:0.82em'>{arrow} {chg_str}</div>"
+                    f"<div style='color:#8b949e;font-size:0.68em'>52W:{pct_str}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True)
 
     st.divider()
 
