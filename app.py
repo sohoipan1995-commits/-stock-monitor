@@ -1257,15 +1257,15 @@ fig_tech.add_trace(go.Scatter(x=df_ch.index,y=wr_ch,mode="lines",
 fig_tech.add_hline(y=-20,line_dash="dash",line_color="#f85149",row=7,col=1)
 fig_tech.add_hline(y=-80,line_dash="dash",line_color="#3fb950",row=7,col=1)
         fig_tech.update_layout(
-            title=f"{tk_chart} 技術分析（K線 / 成交量 / RSI日+周 / MACD / KDJ）",
-            height=900,paper_bgcolor="#0d1117",plot_bgcolor="#0d1117",
-            font=dict(color="#e6edf3"),xaxis_rangeslider_visible=False,
-            legend=dict(bgcolor="#161b22",bordercolor="#30363d"),
-            margin=dict(l=10,r=10,t=50,b=10)
-        )
-        for i in range(1,6):
-            fig_tech.update_xaxes(gridcolor="#21262d",row=i,col=1)
-            fig_tech.update_yaxes(gridcolor="#21262d",row=i,col=1)
+    title=f"{tk_chart} 技術分析（K線 / 成交量 / RSI日+周 / MACD / KDJ / CCI / W%R）",
+    height=1050,paper_bgcolor="#0d1117",plot_bgcolor="#0d1117",
+    font=dict(color="#e6edf3"),xaxis_rangeslider_visible=False,
+    legend=dict(bgcolor="#161b22",bordercolor="#30363d"),
+    margin=dict(l=10,r=10,t=50,b=10)
+)
+for i in range(1,8):
+    fig_tech.update_xaxes(gridcolor="#21262d",row=i,col=1)
+    fig_tech.update_yaxes(gridcolor="#21262d",row=i,col=1)
 
         st.plotly_chart(fig_tech, use_container_width=True)
 
