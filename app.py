@@ -520,9 +520,9 @@ with tab1:
         ("US10Y","🏦 美債10年息"),("DXY","💵 美元指數"),
         ("HYG","📉 高收益債"),("VHSI","🇭🇰 港股波幅"),
     ]
-        for row_items in [kpi_items[:4], kpi_items[4:]]:
+    for row_items in [kpi_items[:4], kpi_items[4:]]:
         cols_kpi = st.columns(4)
-        for i,(key,label) in enumerate(row_items):
+    for i,(key,label) in enumerate(row_items):
             val = safe_get(key)
             chg = safe_get(key,"chg")
             pct = safe_get(key,"pct")
