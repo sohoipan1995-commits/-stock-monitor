@@ -26,7 +26,7 @@ remaining = max(0, 1800 - int(elapsed))
 mins, secs = divmod(remaining, 60)
 
 with st.sidebar:
-    st.markdown(f"🔄 自動刷新：**{_mins:02d}:{_secs:02d}**")
+    st.markdown(f"🔄 自動刷新：**{mins:02d}:{secs:02d}**")
 if st.button("🔄 立即刷新"):
     st.session_state.last_refresh = time.time()
     st.cache_data.clear()
