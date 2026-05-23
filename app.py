@@ -15,7 +15,27 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+import time
 
+# ── 自動刷新：每30分鐘重新載入 ──────────────────────
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = time.time()
+
+elapsed = time.time() - st.session_state.last_refresh
+remaining = max(0, 1800 - int(elapsed))
+mins, secs = divmod(remaining, 60)
+
+with st.sidebar:
+    st.markdown(f"🔄 自動刷新：**{mins:02d}:{secs:02d}**")
+    if st.button("🔄 立即刷新"):
+        st.session_state.last_refresh = time.time()
+        st.cache_data.clear()
+        st.rerun()
+
+if elapsed >= 1800:
+    st.session_state.last_refresh = time.time()
+    st.cache_data.clear()
+    st.rerun()
 st.markdown("""
 <style>
   [data-testid="stAppViewContainer"]{background:#0d1117;}
