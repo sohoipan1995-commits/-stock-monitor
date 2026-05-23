@@ -843,22 +843,18 @@ with tab2:
         sort_col1, _ = st.columns([2,4])
         with sort_col1:
             sort_by = st.selectbox("排序方式", ["總分（短+中）","短線分","中線分","量比","距高位%","周線RSI"], key="sort_by")
-            sort_key_map = {
-    "總分（短+中）": lambda x: x["短線分"]+x["中線分"],
-    "短線分":  lambda x: x["短線分"],
-    "中線分":  lambda x: x["中線分"],
-    "量比":    lambda x: x["量比"],
-    "距高位%": lambda x: -x["距高位%"],
-    "周線RSI": lambda x: x["周線RSI"],
-}
-sorted_filtered = sorted(filtered, key=sort_key_map[sort_by],
-                         reverse=sort_by not in ["距高位%"])
+        sort_key_map = {
+            "總分（短+中）": lambda x: x["短線分"]+x["中線分"],
+            "短線分":  lambda x: x["短線分"],
+            "中線分":  lambda x: x["中線分"],
+            "量比":    lambda x: x["量比"],
+            "距高位%": lambda x: -x["距高位%"],
+            "周線RSI": lambda x: x["周線RSI"],
+        }
+        sorted_filtered = sorted(filtered, key=sort_key_map[sort_by],
+                                 reverse=sort_by not in ["距高位%"])
         for r in sorted_filtered:
             weekly_warn_str = " ⚠️周線仍強" if r.get("周線RSI",50)>60 else ""
-            with st.expander(
-                f"{r['信號']}  {r['代碼']}  現價 {r['現價']}  "
-                f"({r['1日漲跌%']:+.1f}%)  ｜ 短線:{r['短線分']}  中線:{r['中線分']}{weekly_warn_str}"
-            ):
             with st.expander(
                 f"{r['信號']}  {r['代碼']}  現價 {r['現價']}  "
                 f"({r['1日漲跌%']:+.1f}%)  ｜ 短線:{r['短線分']}  中線:{r['中線分']}{weekly_warn_str}"
