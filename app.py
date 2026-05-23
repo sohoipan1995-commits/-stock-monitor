@@ -1242,29 +1242,30 @@ with tab4:
         for y in [20,80]:
             fig_tech.add_hline(y=y,line_dash="dash",line_color="#8b949e",row=5,col=1)
         
-# CCI
-cci_ch = calc_cci(df_ch)
-fig_tech.add_trace(go.Scatter(x=df_ch.index,y=cci_ch,mode="lines",
-    line=dict(color="#79c0ff",width=1.2),name="CCI"),row=6,col=1)
-for y in [100,-100,0]:
-    fig_tech.add_hline(y=y,line_dash="dash",line_color="#8b949e",row=6,col=1)
+        # CCI
+        cci_ch = calc_cci(df_ch)
+        fig_tech.add_trace(go.Scatter(x=df_ch.index,y=cci_ch,mode="lines",
+            line=dict(color="#79c0ff",width=1.2),name="CCI"),row=6,col=1)
+        for y in [100,-100,0]:
+            fig_tech.add_hline(y=y,line_dash="dash",line_color="#8b949e",row=6,col=1)
 
-# Williams %R
-wr_ch = calc_wr(df_ch)
-fig_tech.add_trace(go.Scatter(x=df_ch.index,y=wr_ch,mode="lines",
-    line=dict(color="#ffa657",width=1.2),name="W%R"),row=7,col=1)
-fig_tech.add_hline(y=-20,line_dash="dash",line_color="#f85149",row=7,col=1)
-fig_tech.add_hline(y=-80,line_dash="dash",line_color="#3fb950",row=7,col=1)
+        # Williams %R
+        wr_ch = calc_wr(df_ch)
+        fig_tech.add_trace(go.Scatter(x=df_ch.index,y=wr_ch,mode="lines",
+            line=dict(color="#ffa657",width=1.2),name="W%R"),row=7,col=1)
+        fig_tech.add_hline(y=-20,line_dash="dash",line_color="#f85149",row=7,col=1)
+        fig_tech.add_hline(y=-80,line_dash="dash",line_color="#3fb950",row=7,col=1)
+
         fig_tech.update_layout(
-    title=f"{tk_chart} 技術分析（K線 / 成交量 / RSI日+周 / MACD / KDJ / CCI / W%R）",
-    height=1050,paper_bgcolor="#0d1117",plot_bgcolor="#0d1117",
-    font=dict(color="#e6edf3"),xaxis_rangeslider_visible=False,
-    legend=dict(bgcolor="#161b22",bordercolor="#30363d"),
-    margin=dict(l=10,r=10,t=50,b=10)
-)
-for i in range(1,8):
-    fig_tech.update_xaxes(gridcolor="#21262d",row=i,col=1)
-    fig_tech.update_yaxes(gridcolor="#21262d",row=i,col=1)
+            title=f"{tk_chart} 技術分析（K線 / 成交量 / RSI日+周 / MACD / KDJ / CCI / W%R）",
+            height=1050,paper_bgcolor="#0d1117",plot_bgcolor="#0d1117",
+            font=dict(color="#e6edf3"),xaxis_rangeslider_visible=False,
+            legend=dict(bgcolor="#161b22",bordercolor="#30363d"),
+            margin=dict(l=10,r=10,t=50,b=10)
+        )
+        for i in range(1,8):
+            fig_tech.update_xaxes(gridcolor="#21262d",row=i,col=1)
+            fig_tech.update_yaxes(gridcolor="#21262d",row=i,col=1)
 
         st.plotly_chart(fig_tech, use_container_width=True)
 
