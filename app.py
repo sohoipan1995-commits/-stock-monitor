@@ -26,11 +26,12 @@ remaining = max(0, 1800 - int(elapsed))
 mins, secs = divmod(remaining, 60)
 
 with st.sidebar:
-    st.markdown(f"🔄 自動刷新：**{mins:02d}:{secs:02d}**")
-    if st.button("🔄 立即刷新"):
-        st.session_state.last_refresh = time.time()
-        st.cache_data.clear()
-        st.rerun()
+    st.markdown(f"🔄 自動刷新：**{_mins:02d}:{_secs:02d}**")
+if st.button("🔄 立即刷新"):
+    st.session_state.last_refresh = time.time()
+    st.cache_data.clear()
+    st.rerun()
+st.divider()
 
 if elapsed >= 1800:
     st.session_state.last_refresh = time.time()
@@ -519,12 +520,21 @@ with tab1:
         ("US10Y","🏦 美債10年息"),("DXY","💵 美元指數"),
         ("HYG","📉 高收益債"),("VHSI","🇭🇰 港股波幅"),
     ]
-    cols_kpi = st.columns(8)
-    for i,(key,label) in enumerate(kpi_items):
+    for row_items in [kpi_items[:4], kpi_items[4:]]:
+    cols_kpi = st.columns(4)
+    for i,(key,label) in enumerate(row_items):
         val = safe_get(key); chg = safe_get(key,"chg"); pct = safe_get(key,"pct")
         color = "#3fb950" if chg>=0 else "#f85149"
         arrow = "▲" if chg>=0 else "▼"
         with cols_kpi[i]:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div style="font-size:1em">{label.split()[0]}</div>
+              <div style="color:#8b949e;font-size:0.7em">{' '.join(label.split()[1:])}</div>
+              <div style="font-size:1.1em;font-weight:bold;color:#e6edf3;margin:4px 0">{val:.2f}</div>
+              <div style="color:{color};font-size:0.82em">{arrow} {chg:+.2f}%</div>
+              <div style="color:#8b949e;font-size:0.68em">52W:{pct:.0f}%</div>
+            </div>""", unsafe_allow_html=True)
             st.markdown(f"""
             <div class="metric-card">
               <div style="font-size:1em">{label.split()[0]}</div>
@@ -588,7 +598,39 @@ with tab1:
                 unsafe_allow_html=True)
 
     st.divider()
-
+st.markdown("### 📉 VIX 恐慌指數近30日走勢")
+vix_series = mkt.get("VIX", {}).get("close_series", []) if isinstance(mkt.get("VIX"), dict) else []
+if len(vix_series) >= 10:
+    vix_plot = vix_series[-30:]
+    vix_mean = sum(vix_plot) / len(vix_plot)
+    vix_now_val = vix_plot[-1]
+    fig_vix = go.Figure()
+    fig_vix.add_trace(go.Scatter(
+        y=vix_plot, mode="lines+markers",
+        line=dict(color="#f85149", width=2),
+        marker=dict(size=4),
+        fill="tozeroy", fillcolor="rgba(248,81,73,0.08)",
+        name="VIX"
+    ))
+    fig_vix.add_hline(y=30, line_dash="dash", line_color="#3fb950",
+        annotation_text="30 恐慌區", annotation_position="right")
+    fig_vix.add_hline(y=20, line_dash="dot", line_color="#d29922",
+        annotation_text="20 警戒線", annotation_position="right")
+    fig_vix.add_hline(y=15, line_dash="dot", line_color="#f85149",
+        annotation_text="15 貪婪區", annotation_position="right")
+    fig_vix.add_hline(y=vix_mean, line_dash="dash", line_color="#8b949e",
+        annotation_text=f"30日均 {vix_mean:.1f}", annotation_position="left")
+    fig_vix.update_layout(
+        height=220, paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+        font=dict(color="#e6edf3"), showlegend=False,
+        margin=dict(l=10, r=80, t=15, b=10),
+        xaxis=dict(gridcolor="#21262d", showticklabels=False),
+        yaxis=dict(gridcolor="#21262d", title="VIX")
+    )
+    vix_color = "#3fb950" if vix_now_val>=30 else ("#d29922" if vix_now_val>=20 else "#f85149")
+    vix_label = "🔥 恐慌區" if vix_now_val>=30 else ("⚠️ 警戒" if vix_now_val>=20 else "😎 貪婪")
+    st.markdown(f"<span style='color:{vix_color};font-weight:bold'>現值 {vix_now_val:.2f} — {vix_label}</span> ｜ 30日均值：{vix_mean:.2f}", unsafe_allow_html=True)
+    st.plotly_chart(fig_vix, use_container_width=True)
     # 美股 vs 港股 詳細氣氛
     st.markdown("### 📡 美股 vs 港股 詳細氣氛")
     us_col, hk_col = st.columns(2)
@@ -798,7 +840,20 @@ with tab2:
         fig_bar.update_yaxes(gridcolor="#21262d",range=[0,105])
         st.plotly_chart(fig_bar, use_container_width=True)
 
-        for r in sorted(filtered, key=lambda x: x["短線分"]+x["中線分"], reverse=True):
+        sort_col1, _ = st.columns([2,4])
+with sort_col1:
+    sort_by = st.selectbox("排序方式", ["總分（短+中）","短線分","中線分","量比","距高位%","周線RSI"], key="sort_by")
+sort_key_map = {
+    "總分（短+中）": lambda x: x["短線分"]+x["中線分"],
+    "短線分":  lambda x: x["短線分"],
+    "中線分":  lambda x: x["中線分"],
+    "量比":    lambda x: x["量比"],
+    "距高位%": lambda x: -x["距高位%"],
+    "周線RSI": lambda x: x["周線RSI"],
+}
+sorted_filtered = sorted(filtered, key=sort_key_map[sort_by],
+                         reverse=sort_by not in ["距高位%"])
+for r in sorted_filtered:
             weekly_warn_str = " ⚠️周線仍強" if r.get("周線RSI",50)>60 else ""
             with st.expander(
                 f"{r['信號']}  {r['代碼']}  現價 {r['現價']}  "
@@ -1135,8 +1190,8 @@ with tab4:
         bb_up  = sma20+2*close_ch.rolling(20).std()
         bb_dn  = sma20-2*close_ch.rolling(20).std()
 
-        fig_tech = make_subplots(rows=5,cols=1,shared_xaxes=True,
-            row_heights=[0.42,0.14,0.16,0.14,0.14],vertical_spacing=0.02)
+        fig_tech = make_subplots(rows=7,cols=1,shared_xaxes=True,
+    row_heights=[0.34,0.10,0.13,0.11,0.11,0.11,0.10],vertical_spacing=0.02)
 
         fig_tech.add_trace(go.Candlestick(
             x=df_ch.index,open=df_ch["open"],high=df_ch["high"],
@@ -1187,7 +1242,20 @@ with tab4:
             line=dict(color="#d29922",width=1.2),name="J"),row=5,col=1)
         for y in [20,80]:
             fig_tech.add_hline(y=y,line_dash="dash",line_color="#8b949e",row=5,col=1)
+        
+# CCI
+cci_ch = calc_cci(df_ch)
+fig_tech.add_trace(go.Scatter(x=df_ch.index,y=cci_ch,mode="lines",
+    line=dict(color="#79c0ff",width=1.2),name="CCI"),row=6,col=1)
+for y in [100,-100,0]:
+    fig_tech.add_hline(y=y,line_dash="dash",line_color="#8b949e",row=6,col=1)
 
+# Williams %R
+wr_ch = calc_wr(df_ch)
+fig_tech.add_trace(go.Scatter(x=df_ch.index,y=wr_ch,mode="lines",
+    line=dict(color="#ffa657",width=1.2),name="W%R"),row=7,col=1)
+fig_tech.add_hline(y=-20,line_dash="dash",line_color="#f85149",row=7,col=1)
+fig_tech.add_hline(y=-80,line_dash="dash",line_color="#3fb950",row=7,col=1)
         fig_tech.update_layout(
             title=f"{tk_chart} 技術分析（K線 / 成交量 / RSI日+周 / MACD / KDJ）",
             height=900,paper_bgcolor="#0d1117",plot_bgcolor="#0d1117",
