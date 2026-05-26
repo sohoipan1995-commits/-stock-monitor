@@ -452,9 +452,19 @@ with tab1:
                 }
             except: pass
 
-        sp500_sample = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
-                        "JPM","BAC","XOM","JNJ","UNH","PG","AVGO","ORCL",
-                        "HD","MA","V","COST","MRK"]
+        sp500_sample = [
+            # 科技
+            "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","ORCL","AMD",
+            "QCOM","INTC","AMAT","LRCX","KLAC",
+            # 金融
+            "JPM","BAC","GS","MS","WFC","BRK-B","V","MA","AXP","BLK",
+            # 醫療
+            "JNJ","UNH","PFE","ABBV","MRK","LLY","TMO","ABT","DHR","ISRG",
+            # 消費+工業
+            "HD","WMT","COST","PG","KO","PEP","MCD","NKE","SBUX","TGT",
+            # 能源+公用
+            "XOM","CVX","NEE","DUK","SO",
+        ]
         oversold_count = 0
         valid_count = 0
         for tk in sp500_sample:
