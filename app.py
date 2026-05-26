@@ -516,6 +516,18 @@ with tab1:
 
     opportunity_score = 100 - calc_opportunity_score()
 
+    # 加呢行睇實際數值
+    with st.expander("🔍 評分 Debug"):
+        st.write(f"VIX: {safe_get('VIX'):.2f}")
+        st.write(f"VHSI: {safe_get('VHSI'):.2f}")
+        st.write(f"HYG chg: {safe_get('HYG','chg'):.2f}")
+        st.write(f"DXY pct: {safe_get('DXY','pct'):.1f}")
+        st.write(f"HSI RSI: {safe_get('HSI','rsi'):.1f}")
+        st.write(f"breadth: {mkt.get('breadth_oversold')}")
+        raw = calc_opportunity_score()
+        st.write(f"raw score (before 100-x): {raw}")
+        st.write(f"final opportunity_score: {100-raw}")
+
     # KPI 卡
     st.markdown("### 📊 全球宏觀指標")
     kpi_items = [
