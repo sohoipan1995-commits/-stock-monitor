@@ -479,50 +479,105 @@ with tab1:
         v = mkt.get(key,{})
         return v.get(subkey,default) if isinstance(v,dict) else default
 
-    def calc_opportunity_score():
+    def calc_us_score():
         score = 50
-        vix_v  = safe_get("VIX")
-        vhsi_v = safe_get("VHSI")
-        hyg_chg= safe_get("HYG","chg")
-        dxy_pct= safe_get("DXY","pct")
-        breadth= mkt.get("breadth_oversold",0)
-        hsi_rsi= safe_get("HSI","rsi")
-
-        # VHSI=0 係數據失效，唔計分
-        vhsi_valid = vhsi_v if (vhsi_v and vhsi_v > 1) else None
-        # breadth=0 有可能係失效，唔計分
+        vix_v   = safe_get("VIX")
+        vvix_v  = safe_get("VVIX")
+        hyg_chg = safe_get("HYG","chg")
+        dxy_pct = safe_get("DXY","pct")
+        us10y_v = safe_get("US10Y")
+        spx_rsi = safe_get("SPX","rsi")
+        breadth = mkt.get("breadth_oversold", None)
         breadth_valid = breadth if (breadth is not None and breadth > 0) else None
 
+        # VIX 恐慌指數（最重要，權重最高）
         if vix_v>=40:   score-=30
-        elif vix_v>=30: score-=20
-        elif vix_v>=22: score-=8
+        elif vix_v>=30: score-=15
+        elif vix_v>=22: score-=5
         elif vix_v<=15: score+=15
         elif vix_v<=18: score+=8
 
+        # VVIX 波動率的波動率
+        if vvix_v>=120: score-=10
+        elif vvix_v>=100: score-=5
+        elif vvix_v<=80: score+=5
+
+        # HYG 高收益債（信用市場風向）
+        if hyg_chg<=-1.5: score-=12
+        elif hyg_chg<=-0.5: score-=5
+        elif hyg_chg>=0.5: score+=5
+
+        # DXY 美元強弱
+        if dxy_pct>=80: score-=10
+        elif dxy_pct>=65: score-=5
+        elif dxy_pct<=30: score+=8
+
+        # 美債10年息
+        if us10y_v>=4.8: score-=10
+        elif us10y_v>=4.5: score-=5
+        elif us10y_v<=3.5: score+=8
+
+        # 標普500 RSI
+        if spx_rsi<30: score+=20
+        elif spx_rsi<40: score+=10
+        elif spx_rsi>70: score-=15
+        elif spx_rsi>60: score-=5
+
+        # 市場寬度（有效才計）
+        if breadth_valid is not None:
+            if breadth_valid>=40:   score-=20
+            elif breadth_valid>=25: score-=10
+            elif breadth_valid<=5:  score+=8
+
+        return max(0, min(100, score))
+
+    def calc_hk_score():
+        score = 50
+        vhsi_v   = safe_get("VHSI")
+        hsi_rsi  = safe_get("HSI","rsi")
+        hsi_pct  = safe_get("HSI","pct")
+        hsi_vol  = safe_get("HSI","vol_ratio")
+        usdhkd_v = safe_get("USDHKD")
+        dxy_pct  = safe_get("DXY","pct")
+
+        # VHSI（有效才計）
+        vhsi_valid = vhsi_v if (vhsi_v and vhsi_v > 1) else None
         if vhsi_valid is not None:
             if vhsi_valid>=35:   score-=20
             elif vhsi_valid>=25: score-=10
-            elif vhsi_valid<=18: score+=10
+            elif vhsi_valid<=18: score+=12
 
-        if breadth_valid is not None:
-            if breadth_valid>=40:   score-=25
-            elif breadth_valid>=25: score-=12
-            elif breadth_valid<=5:  score+=10
+        # 恒指RSI（最重要）
+        if hsi_rsi<30:  score+=25
+        elif hsi_rsi<40: score+=12
+        elif hsi_rsi>70: score-=20
+        elif hsi_rsi>60: score-=8
 
-        if hyg_chg<=-1.5: score-=10
-        elif hyg_chg>=0.5: score+=5
+        # 恒指52周水位
+        if hsi_pct<=15:  score+=20
+        elif hsi_pct<=25: score+=10
+        elif hsi_pct>=80: score-=15
+        elif hsi_pct>=65: score-=8
 
-        if dxy_pct>=80:  score-=8
+        # 恒指成交量比
+        if hsi_vol and hsi_vol > 0:
+            if hsi_vol>=2.0:  score+=10
+            elif hsi_vol>=1.5: score+=5
+            elif hsi_vol<=0.5: score-=5
+
+        # 港元匯率
+        if usdhkd_v>=7.83: score-=10
+        elif usdhkd_v>=7.80: score-=5
+        elif usdhkd_v<=7.76: score+=5
+
+        # DXY 間接影響港股
+        if dxy_pct>=80: score-=8
         elif dxy_pct<=30: score+=5
 
-        if hsi_rsi<=30:  score-=15
-        elif hsi_rsi<=40: score-=5
-        elif hsi_rsi>=65: score+=10
-
-        return max(0,min(100,score))
-
-    opportunity_score = 100 - calc_opportunity_score()
-
+        return max(0, min(100, score))
+      us_score = calc_us_score()
+    hk_score = calc_hk_score()
+    opportunity_score = (us_score + hk_score) // 2  # 保留總分作其他用途
     # 加呢行睇實際數值
     with st.expander("🔍 評分 Debug"):
         st.write(f"VIX: {safe_get('VIX'):.2f}")
@@ -570,36 +625,53 @@ with tab1:
     st.divider()
 
     # Gauge 儀表盤
-    st.markdown("### 🎯 撈底機會總評")
-    g_col1, g_col2 = st.columns([1,1])
-    with g_col1:
-        if opportunity_score>=70:   gc="#3fb950"; gt="🔥 極佳撈底視窗"
-        elif opportunity_score>=55: gc="#d29922"; gt="⚠️ 謹慎撈底機會"
-        elif opportunity_score>=40: gc="#8b949e"; gt="😐 市場中性"
-        else:                       gc="#f85149"; gt="😎 市場貪婪風險"
+      st.markdown("### 🎯 撈底機會總評")
+    g_col1, g_col2, g_col3 = st.columns([1,1,1])
 
-        fig_gauge = go.Figure(go.Indicator(
+    def make_gauge(score, title):
+        if score>=70:   gc="#3fb950"; gt="🔥 極佳撈底視窗"
+        elif score>=55: gc="#d29922"; gt="⚠️ 謹慎撈底機會"
+        elif score>=40: gc="#8b949e"; gt="😐 市場中性"
+        else:           gc="#f85149"; gt="😎 市場貪婪風險"
+        fig = go.Figure(go.Indicator(
             mode="gauge+number",
-            value=opportunity_score,
-            title={"text":f"撈底機會分<br><span style='font-size:0.7em;color:{gc}'>{gt}</span>"},
-            number={"font":{"color":gc,"size":48},"suffix":"/100"},
+            value=score,
+            title={"text":f"{title}<br><span style='font-size:0.7em;color:{gc}'>{gt}</span>"},
+            number={"font":{"color":gc,"size":40},"suffix":"/100"},
             gauge={
                 "axis":{"range":[0,100]},
                 "bar":{"color":gc,"thickness":0.25},
                 "bgcolor":"#161b22","bordercolor":"#30363d",
                 "steps":[
-                    {"range":[0,25],"color":"#1a1a2e"},{"range":[25,45],"color":"#1c1a00"},
-                    {"range":[45,65],"color":"#161b22"},{"range":[65,80],"color":"#0d2818"},
+                    {"range":[0,25], "color":"#1a1a2e"},
+                    {"range":[25,45],"color":"#1c1a00"},
+                    {"range":[45,65],"color":"#161b22"},
+                    {"range":[65,80],"color":"#0d2818"},
                     {"range":[80,100],"color":"#0d3318"},
                 ],
-                "threshold":{"line":{"color":"#ffffff","width":3},"thickness":0.8,"value":opportunity_score}
+                "threshold":{"line":{"color":"#ffffff","width":3},
+                             "thickness":0.8,"value":score}
             }
         ))
-        fig_gauge.update_layout(height=280,paper_bgcolor="#0d1117",
-                                 font=dict(color="#e6edf3"),margin=dict(l=20,r=20,t=60,b=20))
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        fig.update_layout(
+            height=260, paper_bgcolor="#0d1117",
+            font=dict(color="#e6edf3"),
+            margin=dict(l=20,r=20,t=60,b=20)
+        )
+        return fig
 
+    with g_col1:
+        st.plotly_chart(make_gauge(us_score, "🇺🇸 美股撈底機會"),
+                        use_container_width=True)
     with g_col2:
+        st.plotly_chart(make_gauge(hk_score, "🇭🇰 港股撈底機會"),
+                        use_container_width=True)
+    with g_col3:
+        st.plotly_chart(make_gauge(opportunity_score, "🌍 綜合評分"),
+                        use_container_width=True)
+
+    # 評分等級說明（保留原本右側說明，但縮細）
+    with st.expander("📖 評分等級說明"):
         levels = [
             ("80-100","🟢 極佳撈底視窗","市場極度恐慌，VIX高企，歷史上最強分批建倉時機"),
             ("60-79", "🟢 良好撈底機會","市場明顯悲觀，技術超賣，可輕倉試探"),
@@ -607,6 +679,9 @@ with tab1:
             ("20-39", "🟠 市場樂觀",    "情緒偏熱，不宜追高，等回調"),
             ("0-19",  "🔴 極度貪婪",    "市場過熱，VIX極低，宜減倉觀望"),
         ]
+        for sr,label,desc in levels:
+            st.markdown(
+                f"**{label}** （{sr}分）— {desc}")
         st.markdown("<div style='height:15px'></div>", unsafe_allow_html=True)
         for sr,label,desc in levels:
             lo,hi_s = map(int,sr.split("-"))
