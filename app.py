@@ -674,8 +674,26 @@ if len(vix_series) >= 10:
             "VIX本身的波動。>120=恐慌極端；是市場見底的先行指標",vc2,
             "🌊 極端不穩，恐慌頂部" if vvix_v>=120 else ("⚠️ 波動加劇" if vvix_v>=100 else "—正常")),
             unsafe_allow_html=True)
-        if breadth is None:
-            st.markdown(ind_row("📊 市場寬度（超賣佔比）", 0,
+        try:
+            df_qqq = yf.download("QQQ", period="3mo", auto_adjust=True, progress=False)
+            if isinstance(df_qqq.columns, pd.MultiIndex):
+                df_qqq.columns = df_qqq.columns.get_level_values(0)
+            df_qqq.columns = [c.lower() for c in df_qqq.columns]
+            qqq_rsi = float(calc_rsi(df_qqq["close"]).iloc[-1]) if len(df_qqq)>=20 else None
+        except:
+            qqq_rsi = None
+
+        if qqq_rsi is not None and not pd.isna(qqq_rsi):
+            qc = "#3fb950" if qqq_rsi<30 else ("#f85149" if qqq_rsi>70 else "#8b949e")
+            st.markdown(ind_row("📈 納指ETF QQQ RSI", qqq_rsi,
+                "納指100 ETF日線RSI。<30=科技股超賣撈底區；>70=過熱",qc,
+                "🔥 科技股超賣" if qqq_rsi<30 else ("⚠️ 科技股過熱" if qqq_rsi>70 else "—中性")),
+                unsafe_allow_html=True)
+        else:
+            st.markdown(ind_row("📈 納指ETF QQQ RSI", 0,
+                "納指100 ETF日線RSI。<30=科技股超賣撈底區；>70=過熱", "#8b949e",
+                "N/A ⚠️ 數據暫時無法獲取", ".0f"),
+                unsafe_allow_html=True)
                 "S&P500抽樣RSI<30佔比。>40%=系統性拋售，歷史底部區域", "#8b949e",
                 "N/A ⚠️ 數據暫時無法獲取", ".0f"),
                 unsafe_allow_html=True)
@@ -712,10 +730,17 @@ if len(vix_series) >= 10:
 
     with hk_col:
         st.markdown("#### 🇭🇰 港股市場氣氛")
-        if vhsi_v == 0 or pd.isna(vhsi_v):
-            st.markdown(ind_row("😱 VHSI 港股波幅指數", 0,
-                "港版VIX。>30=市場恐慌；底部常出現VHSI尖頂後掉頭", "#8b949e",
-                "N/A ⚠️ 數據暫時無法獲取"),
+        hsi_rsi_w = float(calc_rsi(pd.Series(mkt.get("HSI",{}).get("close_series",[])), 10).iloc[-1]) if len(mkt.get("HSI",{}).get("close_series",[])) >= 15 else None
+        if hsi_rsi_w is not None and not pd.isna(hsi_rsi_w):
+            hw_c = "#3fb950" if hsi_rsi_w<30 else ("#d29922" if hsi_rsi_w<45 else "#f85149")
+            st.markdown(ind_row("📊 恒指周線RSI（模擬）", hsi_rsi_w,
+                "用60日收盤價模擬周線RSI。<30=中線超賣底部；>65=中線過熱",hw_c,
+                "🔥 中線超賣，底部區域" if hsi_rsi_w<30 else ("⚠️ 偏熱注意" if hsi_rsi_w>65 else "—中性")),
+                unsafe_allow_html=True)
+        else:
+            st.markdown(ind_row("📊 恒指周線RSI（模擬）", 0,
+                "用60日收盤價模擬周線RSI。<30=中線超賣底部；>65=中線過熱", "#8b949e",
+                "N/A ⚠️ 數據不足"),
                 unsafe_allow_html=True)
         else:
             vh_c = "#3fb950" if vhsi_v>=30 else ("#d29922" if vhsi_v>=22 else "#f85149")
@@ -736,11 +761,22 @@ if len(vix_series) >= 10:
             "🔥 52周低位區" if hsi_pct<=25 else ("⚠️ 中等水位" if hsi_pct<=55 else "😎 高位區"),".1f"),
             unsafe_allow_html=True)
 
-        hv_c = "#3fb950" if hsi_vol_r>=1.5 else ("#8b949e" if hsi_vol_r>=0.8 else "#d29922")
-        st.markdown(ind_row("📦 恒指成交量比（vs20日均）",hsi_vol_r,
-            "今日量vs20日均量。>1.5=放量，資金介入；底部爆量止跌=真底部",hv_c,
-            "🔥 放量，資金介入" if hsi_vol_r>=1.5 else ("—正常" if hsi_vol_r>=0.8 else "⚠️ 縮量")),
-            unsafe_allow_html=True)
+        hsi_close_s = mkt.get("HSI",{}).get("close_series",[]) if isinstance(mkt.get("HSI"),dict) else []
+        if len(hsi_close_s) >= 20:
+            hsi_ma5  = sum(hsi_close_s[-5:]) / 5
+            hsi_ma20 = sum(hsi_close_s[-20:]) / 20
+            ma_diff  = (hsi_ma5 - hsi_ma20) / hsi_ma20 * 100
+            mac = "#3fb950" if ma_diff > 0 else "#f85149"
+            ma_label = "✅ 5日線在20日線之上（短線趨勢向好）" if ma_diff > 0 else "⚠️ 5日線跌穿20日線（短線轉弱）"
+            st.markdown(ind_row("📐 恒指5日/20日均線乖離", ma_diff,
+                "5日均線 vs 20日均線偏差。正數=短線趨勢向好；負數=短線轉弱",mac,
+                ma_label, "+.2f"),
+                unsafe_allow_html=True)
+        else:
+            st.markdown(ind_row("📐 恒指5日/20日均線乖離", 0,
+                "5日均線 vs 20日均線偏差。正數=短線趨勢向好；負數=短線轉弱", "#8b949e",
+                "N/A ⚠️ 數據不足", "+.2f"),
+                unsafe_allow_html=True)
 
         hb_c = "#3fb950" if hsi_20bias<=-8 else ("#f85149" if hsi_20bias>=8 else "#8b949e")
         st.markdown(ind_row("📐 恒指20日均線乖離率",hsi_20bias,
