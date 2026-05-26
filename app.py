@@ -531,54 +531,10 @@ with tab1:
 
         return max(0, min(100, score))
 
-    def calc_hk_score():
-        score = 50
-        vhsi_v   = safe_get("VHSI")
-        hsi_rsi  = safe_get("HSI","rsi")
-        hsi_pct  = safe_get("HSI","pct")
-        hsi_vol  = safe_get("HSI","vol_ratio")
-        usdhkd_v = safe_get("USDHKD")
-        dxy_pct  = safe_get("DXY","pct")
-
-        # VHSI（有效才計）
-        vhsi_valid = vhsi_v if (vhsi_v and vhsi_v > 1) else None
-        if vhsi_valid is not None:
-            if vhsi_valid>=35:   score-=20
-            elif vhsi_valid>=25: score-=10
-            elif vhsi_valid<=18: score+=12
-
-        # 恒指RSI（最重要）
-        if hsi_rsi<30:  score+=25
-        elif hsi_rsi<40: score+=12
-        elif hsi_rsi>70: score-=20
-        elif hsi_rsi>60: score-=8
-
-        # 恒指52周水位
-        if hsi_pct<=15:  score+=20
-        elif hsi_pct<=25: score+=10
-        elif hsi_pct>=80: score-=15
-        elif hsi_pct>=65: score-=8
-
-        # 恒指成交量比
-        if hsi_vol and hsi_vol > 0:
-            if hsi_vol>=2.0:  score+=10
-            elif hsi_vol>=1.5: score+=5
-            elif hsi_vol<=0.5: score-=5
-
-        # 港元匯率
-        if usdhkd_v>=7.83: score-=10
-        elif usdhkd_v>=7.80: score-=5
-        elif usdhkd_v<=7.76: score+=5
-
-        # DXY 間接影響港股
-        if dxy_pct>=80: score-=8
-        elif dxy_pct<=30: score+=5
-
-        return max(0, min(100, score))
-      us_score = calc_us_score()
+    us_score = calc_us_score()
     hk_score = calc_hk_score()
-    opportunity_score = (us_score + hk_score) // 2  # 保留總分作其他用途
-    # 加呢行睇實際數值
+    opportunity_score = (us_score + hk_score) // 2
+
     with st.expander("🔍 評分 Debug"):
         st.write(f"VIX: {safe_get('VIX'):.2f}")
         st.write(f"VHSI: {safe_get('VHSI'):.2f}")
@@ -586,10 +542,10 @@ with tab1:
         st.write(f"DXY pct: {safe_get('DXY','pct'):.1f}")
         st.write(f"HSI RSI: {safe_get('HSI','rsi'):.1f}")
         st.write(f"breadth: {mkt.get('breadth_oversold')}")
-        raw = calc_opportunity_score()
-        st.write(f"raw score (before 100-x): {raw}")
-        st.write(f"final opportunity_score: {100-raw}")
-
+        st.write(f"US Score: {us_score}")
+        st.write(f"HK Score: {hk_score}")
+        st.write(f"綜合評分: {opportunity_score}")
+        
     # KPI 卡
     st.markdown("### 📊 全球宏觀指標")
     kpi_items = [
