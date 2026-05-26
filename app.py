@@ -694,15 +694,6 @@ if len(vix_series) >= 10:
                 "納指100 ETF日線RSI。<30=科技股超賣撈底區；>70=過熱", "#8b949e",
                 "N/A ⚠️ 數據暫時無法獲取", ".0f"),
                 unsafe_allow_html=True)
-                "S&P500抽樣RSI<30佔比。>40%=系統性拋售，歷史底部區域", "#8b949e",
-                "N/A ⚠️ 數據暫時無法獲取", ".0f"),
-                unsafe_allow_html=True)
-        else:
-            bc = "#3fb950" if breadth>=40 else ("#d29922" if breadth>=20 else "#8b949e")
-            st.markdown(ind_row("📊 市場寬度（超賣佔比）",breadth,
-                "S&P500抽樣RSI<30佔比。>40%=系統性拋售，歷史底部區域",bc,
-                f"🔥 {breadth:.0f}%股票超賣" if breadth>=40 else f"—{breadth:.0f}%超賣",".0f"),
-                unsafe_allow_html=True)
 
         dc = "#f85149" if dxy_pct>=75 else ("#d29922" if dxy_pct>=55 else "#3fb950")
         st.markdown(ind_row("💵 美元指數 DXY",dxy_v,
