@@ -719,7 +719,7 @@ if len(vix_series) >= 10:
             "🔥 大盤超賣" if spx_rsi<35 else ("⚠️ 大盤超買" if spx_rsi>65 else "—中性")),
             unsafe_allow_html=True)
 
-    with hk_col:
+        with hk_col:
         st.markdown("#### 🇭🇰 港股市場氣氛")
         hsi_rsi_w = float(calc_rsi(pd.Series(mkt.get("HSI",{}).get("close_series",[])), 10).iloc[-1]) if len(mkt.get("HSI",{}).get("close_series",[])) >= 15 else None
         if hsi_rsi_w is not None and not pd.isna(hsi_rsi_w):
@@ -732,12 +732,6 @@ if len(vix_series) >= 10:
             st.markdown(ind_row("📊 恒指周線RSI（模擬）", 0,
                 "用60日收盤價模擬周線RSI。<30=中線超賣底部；>65=中線過熱", "#8b949e",
                 "N/A ⚠️ 數據不足"),
-                unsafe_allow_html=True)
-        else:
-            vh_c = "#3fb950" if vhsi_v>=30 else ("#d29922" if vhsi_v>=22 else "#f85149")
-            st.markdown(ind_row("😱 VHSI 港股波幅指數",vhsi_v,
-                "港版VIX。>30=市場恐慌；底部常出現VHSI尖頂後掉頭",vh_c,
-                "🔥 港股恐慌，撈底機會" if vhsi_v>=30 else ("⚠️ 波動加劇" if vhsi_v>=22 else "😎 波動低")),
                 unsafe_allow_html=True)
 
         hr_c = "#3fb950" if hsi_rsi_v<30 else ("#f85149" if hsi_rsi_v>70 else "#8b949e")
