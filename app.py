@@ -718,11 +718,11 @@ if len(vix_series) >= 10:
                 "N/A ⚠️ 數據暫時無法獲取"),
                 unsafe_allow_html=True)
         else:
-        vh_c = "#3fb950" if vhsi_v>=30 else ("#d29922" if vhsi_v>=22 else "#f85149")
-        st.markdown(ind_row("😱 VHSI 港股波幅指數",vhsi_v,
-            "港版VIX。>30=市場恐慌；底部常出現VHSI尖頂後掉頭",vh_c,
-            "🔥 港股恐慌，撈底機會" if vhsi_v>=30 else ("⚠️ 波動加劇" if vhsi_v>=22 else "😎 波動低")),
-            unsafe_allow_html=True)
+            vh_c = "#3fb950" if vhsi_v>=30 else ("#d29922" if vhsi_v>=22 else "#f85149")
+            st.markdown(ind_row("😱 VHSI 港股波幅指數",vhsi_v,
+                "港版VIX。>30=市場恐慌；底部常出現VHSI尖頂後掉頭",vh_c,
+                "🔥 港股恐慌，撈底機會" if vhsi_v>=30 else ("⚠️ 波動加劇" if vhsi_v>=22 else "😎 波動低")),
+                unsafe_allow_html=True)
 
         hr_c = "#3fb950" if hsi_rsi_v<30 else ("#f85149" if hsi_rsi_v>70 else "#8b949e")
         st.markdown(ind_row("📊 恒指 RSI（日線）",hsi_rsi_v,
