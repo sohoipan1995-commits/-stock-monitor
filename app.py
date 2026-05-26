@@ -455,7 +455,7 @@ with tab1:
         sp500_sample = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
                         "JPM","BAC","XOM","JNJ","UNH","PG","AVGO","ORCL",
                         "HD","MA","V","COST","MRK"]
-                oversold_count = 0
+        oversold_count = 0
         valid_count = 0
         for tk in sp500_sample:
             try:
