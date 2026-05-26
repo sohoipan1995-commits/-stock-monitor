@@ -719,7 +719,7 @@ if len(vix_series) >= 10:
             "🔥 大盤超賣" if spx_rsi<35 else ("⚠️ 大盤超買" if spx_rsi>65 else "—中性")),
             unsafe_allow_html=True)
 
-        with hk_col:
+    with hk_col:
         st.markdown("#### 🇭🇰 港股市場氣氛")
         hsi_rsi_w = float(calc_rsi(pd.Series(mkt.get("HSI",{}).get("close_series",[])), 10).iloc[-1]) if len(mkt.get("HSI",{}).get("close_series",[])) >= 15 else None
         if hsi_rsi_w is not None and not pd.isna(hsi_rsi_w):
