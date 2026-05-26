@@ -530,7 +530,8 @@ with tab1:
             elif breadth_valid<=5:  score+=8
 
         return max(0, min(100, score))
-        def calc_hk_score():
+
+    def calc_hk_score():
         score = 50
         vhsi_v   = safe_get("VHSI")
         hsi_rsi  = safe_get("HSI","rsi")
