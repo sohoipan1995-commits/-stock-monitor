@@ -488,19 +488,26 @@ with tab1:
         breadth= mkt.get("breadth_oversold",0)
         hsi_rsi= safe_get("HSI","rsi")
 
+        # VHSI=0 係數據失效，唔計分
+        vhsi_valid = vhsi_v if (vhsi_v and vhsi_v > 1) else None
+        # breadth=0 有可能係失效，唔計分
+        breadth_valid = breadth if (breadth is not None and breadth > 0) else None
+
         if vix_v>=40:   score-=30
         elif vix_v>=30: score-=20
         elif vix_v>=22: score-=8
         elif vix_v<=15: score+=15
         elif vix_v<=18: score+=8
 
-        if vhsi_v>=35:   score-=20
-        elif vhsi_v>=25: score-=10
-        elif vhsi_v<=18: score+=10
+        if vhsi_valid is not None:
+            if vhsi_valid>=35:   score-=20
+            elif vhsi_valid>=25: score-=10
+            elif vhsi_valid<=18: score+=10
 
-        if breadth>=40:   score-=25
-        elif breadth>=25: score-=12
-        elif breadth<=5:  score+=10
+        if breadth_valid is not None:
+            if breadth_valid>=40:   score-=25
+            elif breadth_valid>=25: score-=12
+            elif breadth_valid<=5:  score+=10
 
         if hyg_chg<=-1.5: score-=10
         elif hyg_chg>=0.5: score+=5
