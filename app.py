@@ -455,7 +455,8 @@ with tab1:
         sp500_sample = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
                         "JPM","BAC","XOM","JNJ","UNH","PG","AVGO","ORCL",
                         "HD","MA","V","COST","MRK"]
-        oversold_count = 0
+                oversold_count = 0
+        valid_count = 0
         for tk in sp500_sample:
             try:
                 df = yf.download(tk, period="3mo", auto_adjust=True, progress=False)
@@ -463,9 +464,12 @@ with tab1:
                     df.columns = df.columns.get_level_values(0)
                 df.columns = [c.lower() for c in df.columns]
                 if df.empty or len(df)<20: continue
-                if float(calc_rsi(df["close"]).iloc[-1])<30: oversold_count+=1
+                rsi_val = float(calc_rsi(df["close"]).iloc[-1])
+                if pd.isna(rsi_val): continue
+                valid_count += 1
+                if rsi_val < 30: oversold_count += 1
             except: pass
-        result["breadth_oversold"] = oversold_count/len(sp500_sample)*100
+        result["breadth_oversold"] = (oversold_count/valid_count*100) if valid_count > 0 else None
         return result
 
     with st.spinner("載入市場氣氛數據..."):
@@ -670,7 +674,12 @@ if len(vix_series) >= 10:
             "VIX本身的波動。>120=恐慌極端；是市場見底的先行指標",vc2,
             "🌊 極端不穩，恐慌頂部" if vvix_v>=120 else ("⚠️ 波動加劇" if vvix_v>=100 else "—正常")),
             unsafe_allow_html=True)
-
+        if breadth is None:
+            st.markdown(ind_row("📊 市場寬度（超賣佔比）", 0,
+                "S&P500抽樣RSI<30佔比。>40%=系統性拋售，歷史底部區域", "#8b949e",
+                "N/A ⚠️ 數據暫時無法獲取", ".0f"),
+                unsafe_allow_html=True)
+        else:
         bc = "#3fb950" if breadth>=40 else ("#d29922" if breadth>=20 else "#8b949e")
         st.markdown(ind_row("📊 市場寬度（超賣佔比）",breadth,
             "S&P500抽樣RSI<30佔比。>40%=系統性拋售，歷史底部區域",bc,
@@ -703,6 +712,12 @@ if len(vix_series) >= 10:
 
     with hk_col:
         st.markdown("#### 🇭🇰 港股市場氣氛")
+        if vhsi_v == 0 or pd.isna(vhsi_v):
+            st.markdown(ind_row("😱 VHSI 港股波幅指數", 0,
+                "港版VIX。>30=市場恐慌；底部常出現VHSI尖頂後掉頭", "#8b949e",
+                "N/A ⚠️ 數據暫時無法獲取"),
+                unsafe_allow_html=True)
+        else:
         vh_c = "#3fb950" if vhsi_v>=30 else ("#d29922" if vhsi_v>=22 else "#f85149")
         st.markdown(ind_row("😱 VHSI 港股波幅指數",vhsi_v,
             "港版VIX。>30=市場恐慌；底部常出現VHSI尖頂後掉頭",vh_c,
@@ -739,19 +754,31 @@ if len(vix_series) >= 10:
             "⚠️ 接近弱方保證" if usdhkd_v>=7.83 else ("注意走弱" if usdhkd_v>=7.80 else "✅ 港元穩定"),".4f"),
             unsafe_allow_html=True)
 
-        try:
-            df_3032 = yf.download("3032.HK",period="5d",auto_adjust=True,progress=False)
-            if isinstance(df_3032.columns,pd.MultiIndex):
+                try:
+            df_3032 = yf.download("3032.HK", period="5d", auto_adjust=True, progress=False)
+            if isinstance(df_3032.columns, pd.MultiIndex):
                 df_3032.columns = df_3032.columns.get_level_values(0)
             df_3032.columns = [c.lower() for c in df_3032.columns]
-            if not df_3032.empty and len(df_3032)>=2:
-                nw_chg = (float(df_3032["close"].iloc[-1])-float(df_3032["close"].iloc[-2]))/float(df_3032["close"].iloc[-2])*100
-                nw_c = "#3fb950" if nw_chg>=0.3 else ("#f85149" if nw_chg<=-0.3 else "#8b949e")
-                st.markdown(ind_row("🌊 北水方向（港股通ETF替代）",nw_chg,
-                    "以3032.HK港股通ETF估算北水動向。連續流入=內地資金撐盤",nw_c,
-                    "✅ 北水淨流入" if nw_chg>=0.3 else ("⚠️ 北水淨流出" if nw_chg<=-0.3 else "—小幅變動"),"+.2f"),
+            df_3032 = df_3032.dropna(subset=["Close"] if "Close" in df_3032.columns else ["close"])
+            if not df_3032.empty and len(df_3032) >= 2:
+                nw_chg = (float(df_3032["close"].iloc[-1]) - float(df_3032["close"].iloc[-2])) / float(df_3032["close"].iloc[-2]) * 100
+                if pd.isna(nw_chg):
+                    raise ValueError("nw_chg is nan")
+                nw_c = "#3fb950" if nw_chg >= 0.3 else ("#f85149" if nw_chg <= -0.3 else "#8b949e")
+                st.markdown(ind_row("🌊 北水方向（港股通ETF替代）", nw_chg,
+                    "以3032.HK港股通ETF估算北水動向。連續流入=內地資金撐盤", nw_c,
+                    "✅ 北水淨流入" if nw_chg >= 0.3 else ("⚠️ 北水淨流出" if nw_chg <= -0.3 else "—小幅變動"), "+.2f"),
                     unsafe_allow_html=True)
-        except: pass
+            else:
+                st.markdown(ind_row("🌊 北水方向（港股通ETF替代）", 0,
+                    "以3032.HK港股通ETF估算北水動向。連續流入=內地資金撐盤", "#8b949e",
+                    "N/A ⚠️ 數據不足", "+.2f"),
+                    unsafe_allow_html=True)
+        except:
+            st.markdown(ind_row("🌊 北水方向（港股通ETF替代）", 0,
+                "以3032.HK港股通ETF估算北水動向。連續流入=內地資金撐盤", "#8b949e",
+                "N/A ⚠️ 暫時無法獲取", "+.2f"),
+                unsafe_allow_html=True)
 
     st.divider()
     st.markdown("### 📈 指數走勢圖（近60日）")
