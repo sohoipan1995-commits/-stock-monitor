@@ -581,7 +581,7 @@ with tab1:
     st.divider()
 
     # Gauge 儀表盤
-      st.markdown("### 🎯 撈底機會總評")
+    st.markdown("### 🎯 撈底機會總評")
     g_col1, g_col2, g_col3 = st.columns([1,1,1])
 
     def make_gauge(score, title):
