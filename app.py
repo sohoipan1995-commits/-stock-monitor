@@ -530,6 +530,44 @@ with tab1:
             elif breadth_valid<=5:  score+=8
 
         return max(0, min(100, score))
+        def calc_hk_score():
+        score = 50
+        vhsi_v   = safe_get("VHSI")
+        hsi_rsi  = safe_get("HSI","rsi")
+        hsi_pct  = safe_get("HSI","pct")
+        hsi_vol  = safe_get("HSI","vol_ratio")
+        usdhkd_v = safe_get("USDHKD")
+        dxy_pct  = safe_get("DXY","pct")
+
+        vhsi_valid = vhsi_v if (vhsi_v and vhsi_v > 1) else None
+        if vhsi_valid is not None:
+            if vhsi_valid>=35:    score-=20
+            elif vhsi_valid>=25:  score-=10
+            elif vhsi_valid<=18:  score+=12
+
+        if hsi_rsi<30:    score+=25
+        elif hsi_rsi<40:  score+=12
+        elif hsi_rsi>70:  score-=20
+        elif hsi_rsi>60:  score-=8
+
+        if hsi_pct<=15:   score+=20
+        elif hsi_pct<=25: score+=10
+        elif hsi_pct>=80: score-=15
+        elif hsi_pct>=65: score-=8
+
+        if hsi_vol and hsi_vol > 0:
+            if hsi_vol>=2.0:   score+=10
+            elif hsi_vol>=1.5: score+=5
+            elif hsi_vol<=0.5: score-=5
+
+        if usdhkd_v>=7.83:  score-=10
+        elif usdhkd_v>=7.80: score-=5
+        elif usdhkd_v<=7.76: score+=5
+
+        if dxy_pct>=80:  score-=8
+        elif dxy_pct<=30: score+=5
+
+        return max(0, min(100, score))
 
     us_score = calc_us_score()
     hk_score = calc_hk_score()
