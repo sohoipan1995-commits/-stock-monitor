@@ -754,7 +754,7 @@ if len(vix_series) >= 10:
             "⚠️ 接近弱方保證" if usdhkd_v>=7.83 else ("注意走弱" if usdhkd_v>=7.80 else "✅ 港元穩定"),".4f"),
             unsafe_allow_html=True)
 
-                try:
+        try:
             df_3032 = yf.download("3032.HK", period="5d", auto_adjust=True, progress=False)
             if isinstance(df_3032.columns, pd.MultiIndex):
                 df_3032.columns = df_3032.columns.get_level_values(0)
