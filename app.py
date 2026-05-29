@@ -922,7 +922,265 @@ if len(vix_series) >= 10:
                 fig.update_xaxes(gridcolor="#21262d")
                 fig.update_yaxes(gridcolor="#21262d")
                 st.plotly_chart(fig, use_container_width=True)
+    # ════════════ 🇭🇰 香港恐懼與貪婪指數 ════════════════════════════════════════
+    st.divider()
+    st.markdown("### 🇭🇰 香港恐懼與貪婪指數（HK Fear & Greed Index）")
+    st.caption("8項加權指標合成：RSI · 5日急跌 · 20日跌幅 · 52周回撤 · 10日波幅 · VIX · 成交量恐慌 · 200MA乖離 | 0=極度恐懼 → 100=極度貪婪")
 
+    @st.cache_data(ttl=1800, show_spinner=False)
+    def calc_hk_fgi():
+        def _rsi(series, period=14):
+            delta = series.diff()
+            gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
+            loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
+            return 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
+        def _to(val, low, high):
+            return float(np.clip((val - low) / (high - low) * 100, 0, 100))
+        def _inv(val, low, high):
+            return 100.0 - _to(val, low, high)
+        try:
+            hsi_df = yf.download("^HSI", period="2y", interval="1d", auto_adjust=True, progress=False)
+            vix_df = yf.download("^VIX", period="2y", interval="1d", auto_adjust=True, progress=False)
+        except:
+            return None
+        for df_ in [hsi_df, vix_df]:
+            if isinstance(df_.columns, pd.MultiIndex):
+                df_.columns = df_.columns.get_level_values(0)
+            df_.columns = [c.lower() for c in df_.columns]
+        if hsi_df.empty or len(hsi_df) < 60:
+            return None
+        closes = hsi_df["close"].dropna()
+        highs  = hsi_df["high"].dropna()
+        lows   = hsi_df["low"].dropna()
+        vols   = hsi_df["volume"].dropna()
+        n      = len(closes)
+        vix_aligned = vix_df["close"].reindex(closes.index, method="ffill") if not vix_df.empty else pd.Series(20.0, index=closes.index)
+        fgi_vals, hist_dates = [], []
+        for i in range(60, n):
+            sl_c = closes.iloc[:i+1]
+            sl_h = highs.iloc[:i+1]
+            sl_v = vols.iloc[:i+1]
+            c    = float(sl_c.iloc[-1])
+            win  = min(252, len(sl_c))
+            rsi14 = float(_rsi(sl_c, 14).iloc[-1]) if len(sl_c) >= 15 else 50.0
+            rsi_score = float(np.clip(rsi14, 0, 100))
+            pct5 = (c - float(sl_c.iloc[-6])) / float(sl_c.iloc[-6]) * 100 if len(sl_c) >= 6 else 0
+            drop5_score = _to(pct5, -10, 5)
+            pct20 = (c - float(sl_c.iloc[-21])) / float(sl_c.iloc[-21]) * 100 if len(sl_c) >= 21 else 0
+            drop20_score = _to(pct20, -20, 10)
+            hi52 = float(sl_h.iloc[-win:].max())
+            dd   = (hi52 - c) / hi52 * 100
+            dd_score = _inv(dd, 0, 35)
+            ret = sl_c.pct_change().dropna()
+            vol10 = float(ret.iloc[-10:].std() * 100) if len(ret) >= 10 else 1.5
+            vol_score = _inv(vol10, 0.4, 3.5)
+            vix_val = float(vix_aligned.iloc[i]) if not pd.isna(vix_aligned.iloc[i]) else 20.0
+            vix_score = _inv(vix_val, 12, 45)
+            vol_ma20 = float(sl_v.rolling(20).mean().iloc[-1]) if len(sl_v) >= 20 else float(sl_v.mean())
+            vol_now  = float(sl_v.iloc[-1])
+            vol_ratio = vol_now / vol_ma20 if vol_ma20 > 0 else 1.0
+            pct1 = (c - float(sl_c.iloc[-2])) / float(sl_c.iloc[-2]) * 100 if len(sl_c) >= 2 else 0
+            if vol_ratio > 2.0 and pct1 < -1.0:
+                vol_panic_score = 5.0
+            elif vol_ratio > 1.5 and pct1 < 0:
+                vol_panic_score = 25.0
+            elif vol_ratio < 0.6:
+                vol_panic_score = 70.0
+            else:
+                vol_panic_score = _to(pct1, -3, 2) * 0.5 + 50 * 0.5
+            ma200 = float(sl_c.rolling(200).mean().iloc[-1]) if len(sl_c) >= 200 else c
+            bias200 = (c - ma200) / ma200 * 100 if ma200 > 0 else 0
+            bias_score = _to(bias200, -25, 10)
+            comp = round(
+                0.18 * rsi_score + 0.15 * drop5_score + 0.12 * drop20_score +
+                0.12 * dd_score  + 0.13 * vol_score   + 0.18 * vix_score +
+                0.07 * vol_panic_score + 0.05 * bias_score
+            )
+            fgi_vals.append(comp)
+            hist_dates.append(closes.index[i])
+        if not fgi_vals:
+            return None
+        cur_close = float(closes.iloc[-1])
+        cur_vix   = float(vix_aligned.iloc[-1]) if not pd.isna(vix_aligned.iloc[-1]) else 20.0
+        cur_rsi   = float(_rsi(closes, 14).iloc[-1])
+        hi52_cur  = float(highs.iloc[-min(252,n):].max())
+        dd_cur    = (hi52_cur - cur_close) / hi52_cur * 100
+        pct5_cur  = (cur_close - float(closes.iloc[-6])) / float(closes.iloc[-6]) * 100 if n >= 6 else 0
+        ret_cur   = closes.pct_change().dropna()
+        vol10_cur = float(ret_cur.iloc[-10:].std() * 100) if len(ret_cur) >= 10 else 1.5
+        return {
+            "composite": fgi_vals[-1], "hist_vals": fgi_vals, "hist_dates": hist_dates,
+            "cur_rsi": round(cur_rsi,1), "cur_vix": round(cur_vix,1),
+            "cur_dd": round(dd_cur,1),   "cur_pct5": round(pct5_cur,2),
+            "cur_vol10": round(vol10_cur,2), "cur_hsi": round(cur_close,0),
+            "hsi_closes": closes.tolist(), "hsi_dates": closes.index.tolist(),
+        }
+
+    with st.spinner("計算香港恐懼與貪婪指數..."):
+        fgi_data = calc_hk_fgi()
+
+    if fgi_data is None:
+        st.warning("⚠️ 無法計算香港恐懼與貪婪指數，數據不足。")
+    else:
+        comp = fgi_data["composite"]
+        def _fgi_color(s):
+            if s <= 20: return "#d73027"
+            if s <= 40: return "#fc8d59"
+            if s <= 60: return "#e3b341"
+            if s <= 80: return "#3fb950"
+            return "#1a9850"
+        def _fgi_label(s):
+            if s <= 20: return "😱 極度恐懼"
+            if s <= 40: return "😨 恐懼"
+            if s <= 60: return "😐 中性"
+            if s <= 80: return "😊 貪婪"
+            return "🤑 極度貪婪"
+        def _fgi_action(s):
+            if s <= 20: return "市場極度恐慌，歷史上接近底部，是分批建倉的重要視窗，需配合個股信號確認。"
+            if s <= 40: return "市場普遍悲觀，技術超賣，值得重點留意撈底機會，輕倉試探。"
+            if s <= 60: return "市場情緒中性，宜選擇個股技術信號操作，勿過度進取或保守。"
+            if s <= 80: return "市場偏向樂觀，不宜盲目追高，注意高位回調風險，持倉者可部分獲利。"
+            return "市場極度樂觀，歷史上接近短期頂部，宜減倉觀望，等待下一次恐懼視窗。"
+        fc = _fgi_color(comp)
+        fl = _fgi_label(comp)
+
+        st.markdown("""
+        <div style="display:flex;border-radius:8px;overflow:hidden;height:30px;margin-bottom:14px;">
+          <div style="flex:1;background:#d73027;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;">0–20 😱極度恐懼</div>
+          <div style="flex:1;background:#fc8d59;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;">21–40 😨恐懼</div>
+          <div style="flex:1;background:#c8aa25;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;">41–60 😐中性</div>
+          <div style="flex:1;background:#3fb950;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;">61–80 😊貪婪</div>
+          <div style="flex:1;background:#1a9850;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;">81–100 🤑極度貪婪</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(
+            f"<div style='background:rgba(0,0,0,0.3);border-left:4px solid {fc};"
+            f"border-radius:8px;padding:12px 16px;margin-bottom:16px'>"
+            f"<span style='color:{fc};font-size:1.1em;font-weight:bold'>{fl}（今日：{comp}/100）</span><br>"
+            f"<span style='color:#e6edf3;font-size:0.9em'>{_fgi_action(comp)}</span></div>",
+            unsafe_allow_html=True)
+
+        fgi_series_plot = pd.Series(fgi_data["hist_vals"], index=fgi_data["hist_dates"])
+        hsi_series_plot = pd.Series(fgi_data["hsi_closes"], index=fgi_data["hsi_dates"]).iloc[60:]
+
+        fig_fgi = make_subplots(specs=[[{"secondary_y": True}]])
+        for y0, y1, col_ in [
+            (0,20,"rgba(215,48,39,0.12)"),(20,40,"rgba(252,141,89,0.09)"),
+            (40,60,"rgba(180,160,60,0.04)"),(60,80,"rgba(63,185,80,0.07)"),
+            (80,105,"rgba(26,152,80,0.13)"),
+        ]:
+            fig_fgi.add_hrect(y0=y0, y1=y1, fillcolor=col_, line_width=0, secondary_y=False)
+        for y_val, lc_ in [(20,"rgba(215,48,39,0.5)"),(40,"rgba(252,141,89,0.5)"),
+                            (60,"rgba(63,185,80,0.4)"),(80,"rgba(26,152,80,0.5)")]:
+            fig_fgi.add_hline(y=y_val, line_dash="dot", line_color=lc_, line_width=1.2, secondary_y=False)
+
+        fig_fgi.add_trace(go.Scatter(
+            x=fgi_series_plot.index, y=fgi_series_plot.values,
+            name="🔵 HK 恐懼與貪婪指數（左軸）", mode="lines",
+            line=dict(color="#29c5e6", width=2.5),
+            fill="tozeroy", fillcolor="rgba(41,197,230,0.06)",
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>FGI: <b>%{y}</b><extra></extra>",
+        ), secondary_y=False)
+        fig_fgi.add_trace(go.Scatter(
+            x=hsi_series_plot.index, y=hsi_series_plot.values,
+            name="🔴 恒生指數（右軸）", mode="lines",
+            line=dict(color="#e8614a", width=2.5),
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>恒指: <b>%{y:,.0f}</b><extra></extra>",
+        ), secondary_y=True)
+
+        min_idx  = int(np.argmin(fgi_data["hist_vals"]))
+        min_date = fgi_data["hist_dates"][min_idx]
+        min_val  = fgi_data["hist_vals"][min_idx]
+        fig_fgi.add_annotation(
+            x=min_date, y=min_val,
+            text=f"🔥 歷史最恐慌<br>FGI={min_val}",
+            showarrow=True, arrowhead=2, arrowcolor="#ff6b6b", arrowwidth=1.5,
+            font=dict(color="#ff6b6b", size=11),
+            bgcolor="rgba(13,17,23,0.92)", bordercolor="#ff6b6b", borderwidth=1,
+            ax=40, ay=-50, secondary_y=False,
+        )
+        latest_date = fgi_series_plot.index[-1]
+        fig_fgi.add_annotation(
+            x=latest_date, y=float(fgi_series_plot.iloc[-1]),
+            text=f"<b>今日: {comp}</b>",
+            showarrow=True, arrowhead=2, arrowcolor=fc,
+            font=dict(color=fc, size=13),
+            bgcolor="rgba(13,17,23,0.92)", bordercolor=fc, borderwidth=1.5,
+            ax=-65, ay=-35, secondary_y=False,
+        )
+        fig_fgi.add_annotation(
+            x=latest_date, y=float(hsi_series_plot.iloc[-1]),
+            text=f"<b>{fgi_data['cur_hsi']:,.0f}</b>",
+            showarrow=True, arrowhead=2, arrowcolor="#e8614a",
+            font=dict(color="#e8614a", size=13),
+            bgcolor="rgba(13,17,23,0.92)", bordercolor="#e8614a", borderwidth=1.5,
+            ax=55, ay=-30, secondary_y=True,
+        )
+        fig_fgi.update_layout(
+            title={"text": (
+                f"香港恐懼與貪婪指數 vs 恒生指數（近2年）"
+                f"<br><span style='font-size:13px;font-weight:normal;color:#8b949e'>"
+                f"8項加權指標 | 今日 FGI = {comp} {fl}</span>"),
+                "x": 0.5, "xanchor": "center"},
+            paper_bgcolor="#0d1117", plot_bgcolor="#111820",
+            font=dict(color="#e6edf3", size=12),
+            legend=dict(orientation="h", yanchor="bottom", y=1.06,
+                        xanchor="center", x=0.5, font=dict(size=13),
+                        bgcolor="rgba(22,27,34,0.95)", bordercolor="#30363d", borderwidth=1),
+            hovermode="x unified", height=420,
+            margin=dict(t=90, b=50, l=75, r=95),
+            xaxis=dict(gridcolor="rgba(48,54,61,0.35)", tickformat="%b '%y",
+                       dtick="M2", tickfont=dict(size=11), color="#8b949e"),
+        )
+        fig_fgi.update_yaxes(
+            title_text="恐懼與貪婪指數 (0極度恐懼→100極度貪婪)",
+            title_font=dict(color="#29c5e6", size=11),
+            range=[0,115], tickvals=[0,20,40,60,80,100],
+            gridcolor="rgba(48,54,61,0.4)",
+            tickfont=dict(color="#29c5e6", size=11),
+            secondary_y=False, zeroline=False,
+        )
+        fig_fgi.update_yaxes(
+            title_text="恒生指數", title_font=dict(color="#e8614a", size=11),
+            gridcolor="rgba(0,0,0,0)", tickformat=",",
+            tickfont=dict(color="#e8614a", size=11),
+            secondary_y=True, zeroline=False,
+        )
+        st.plotly_chart(fig_fgi, use_container_width=True)
+
+        st.markdown("#### 🔍 當前各分項指標")
+        fm1, fm2, fm3, fm4, fm5 = st.columns(5)
+        with fm1:
+            rsi_c = "#3fb950" if fgi_data["cur_rsi"]<30 else ("#f85149" if fgi_data["cur_rsi"]>70 else "#8b949e")
+            st.markdown(f"<div class='metric-card'><div style='color:#8b949e;font-size:0.7em'>① RSI(14)</div>"
+                        f"<div style='font-size:1.3em;font-weight:bold;color:{rsi_c}'>{fgi_data['cur_rsi']}</div>"
+                        f"<div style='color:#8b949e;font-size:0.68em'>{'超賣🔥' if fgi_data['cur_rsi']<30 else ('超買⚠️' if fgi_data['cur_rsi']>70 else '中性')}</div></div>",
+                        unsafe_allow_html=True)
+        with fm2:
+            p5_c = "#3fb950" if fgi_data["cur_pct5"]<-5 else ("#f85149" if fgi_data["cur_pct5"]>3 else "#8b949e")
+            st.markdown(f"<div class='metric-card'><div style='color:#8b949e;font-size:0.7em'>② 5日漲跌</div>"
+                        f"<div style='font-size:1.3em;font-weight:bold;color:{p5_c}'>{fgi_data['cur_pct5']:+.1f}%</div>"
+                        f"<div style='color:#8b949e;font-size:0.68em'>{'急跌恐慌🔥' if fgi_data['cur_pct5']<-5 else ('急漲貪婪' if fgi_data['cur_pct5']>3 else '平穩')}</div></div>",
+                        unsafe_allow_html=True)
+        with fm3:
+            dd_c = "#3fb950" if fgi_data["cur_dd"]>20 else ("#f85149" if fgi_data["cur_dd"]<5 else "#8b949e")
+            st.markdown(f"<div class='metric-card'><div style='color:#8b949e;font-size:0.7em'>③ 52周回撤</div>"
+                        f"<div style='font-size:1.3em;font-weight:bold;color:{dd_c}'>-{fgi_data['cur_dd']:.1f}%</div>"
+                        f"<div style='color:#8b949e;font-size:0.68em'>{'深度回撤🔥' if fgi_data['cur_dd']>20 else ('近高位' if fgi_data['cur_dd']<5 else '正常')}</div></div>",
+                        unsafe_allow_html=True)
+        with fm4:
+            vix_c = "#3fb950" if fgi_data["cur_vix"]>=30 else ("#f85149" if fgi_data["cur_vix"]<=15 else "#8b949e")
+            st.markdown(f"<div class='metric-card'><div style='color:#8b949e;font-size:0.7em'>④ VIX</div>"
+                        f"<div style='font-size:1.3em;font-weight:bold;color:{vix_c}'>{fgi_data['cur_vix']:.1f}</div>"
+                        f"<div style='color:#8b949e;font-size:0.68em'>{'恐慌區🔥' if fgi_data['cur_vix']>=30 else ('貪婪😎' if fgi_data['cur_vix']<=15 else '中性')}</div></div>",
+                        unsafe_allow_html=True)
+        with fm5:
+            vol_c = "#3fb950" if fgi_data["cur_vol10"]>2.0 else ("#f85149" if fgi_data["cur_vol10"]<0.6 else "#8b949e")
+            st.markdown(f"<div class='metric-card'><div style='color:#8b949e;font-size:0.7em'>⑤ 10日波幅</div>"
+                        f"<div style='font-size:1.3em;font-weight:bold;color:{vol_c}'>{fgi_data['cur_vol10']:.2f}%</div>"
+                        f"<div style='color:#8b949e;font-size:0.68em'>{'高波動恐慌🔥' if fgi_data['cur_vol10']>2.0 else ('極低波動' if fgi_data['cur_vol10']<0.6 else '正常')}</div></div>",
+                        unsafe_allow_html=True)
 # ════════════ TAB 2: 個股掃描 ════════════════════════════════════════════════
 with tab2:
     if market=="🇭🇰 港股":   tickers = HK_WATCHLIST
