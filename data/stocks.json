@@ -1,5 +1,5 @@
 {
-  "updated": "2026-06-27T06:46:43.735996+00:00",
+  "updated": "2026-06-27T09:57:13.130371+00:00",
   "data": {
     "0700.HK": {
       "close": 411.8,
@@ -194,19 +194,19 @@
       "close": 192.53,
       "chg1d": -1.64,
       "hi52": 236.265,
-      "lo52": 151.288,
+      "lo52": 151.289,
       "rsi": 37.6,
       "vol_ratio": 1.05,
       "from_high_pct": -18.5
     },
     "AMZN": {
-      "close": NaN,
-      "chg1d": NaN,
+      "close": 232.69,
+      "chg1d": 2.5,
       "hi52": 278.56,
       "lo52": 196.0,
-      "rsi": 33.6,
-      "vol_ratio": 3.96,
-      "from_high_pct": NaN
+      "rsi": 39.5,
+      "vol_ratio": 4.05,
+      "from_high_pct": -16.5
     },
     "GOOGL": {
       "close": 337.39,
