@@ -1,5 +1,5 @@
 {
-  "updated": "2026-06-27T15:09:06.352217+00:00",
+  "updated": "2026-06-27T16:58:54.219109+00:00",
   "data": {
     "0700.HK": {
       "close": 411.8,
@@ -173,13 +173,13 @@
       "from_high_pct": -25.7
     },
     "AAPL": {
-      "close": 283.78,
-      "chg1d": 3.14,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 317.4,
       "lo52": 198.473,
-      "rsi": 41.3,
-      "vol_ratio": 3.91,
-      "from_high_pct": -10.6
+      "rsi": 32.2,
+      "vol_ratio": 3.9,
+      "from_high_pct": NaN
     },
     "MSFT": {
       "close": 372.97,
@@ -263,13 +263,13 @@
       "from_high_pct": -25.3
     },
     "NEE": {
-      "close": 88.56,
-      "chg1d": 0.98,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 98.032,
       "lo52": 65.309,
-      "rsi": 55.7,
-      "vol_ratio": 1.25,
-      "from_high_pct": -9.7
+      "rsi": 52.3,
+      "vol_ratio": 1.16,
+      "from_high_pct": NaN
     },
     "LITE": {
       "close": 816.98,
@@ -290,13 +290,13 @@
       "from_high_pct": -23.4
     },
     "JPM": {
-      "close": 329.05,
-      "chg1d": -1.81,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 343.45,
       "lo52": 276.287,
-      "rsi": 60.3,
+      "rsi": 67.7,
       "vol_ratio": 1.73,
-      "from_high_pct": -4.2
+      "from_high_pct": NaN
     },
     "BAC": {
       "close": 57.88,
@@ -308,13 +308,13 @@
       "from_high_pct": -2.2
     },
     "SPY": {
-      "close": 728.99,
-      "chg1d": -0.72,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 758.446,
       "lo52": 601.703,
-      "rsi": 44.2,
-      "vol_ratio": 1.13,
-      "from_high_pct": -3.9
+      "rsi": 47.5,
+      "vol_ratio": 1.1,
+      "from_high_pct": NaN
     },
     "QQQ": {
       "close": 706.52,
@@ -326,13 +326,13 @@
       "from_high_pct": -5.5
     },
     "SOXL": {
-      "close": 215.6,
-      "chg1d": -14.65,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 302.0,
       "lo52": 22.563,
-      "rsi": 49.2,
-      "vol_ratio": 0.85,
-      "from_high_pct": -28.6
+      "rsi": 54.9,
+      "vol_ratio": 0.84,
+      "from_high_pct": NaN
     },
     "AMD": {
       "close": 521.58,
