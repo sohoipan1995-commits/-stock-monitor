@@ -1,176 +1,176 @@
 {
-  "updated": "2026-07-17T01:51:20.324885+00:00",
+  "updated": "2026-07-17T04:56:26.731724+00:00",
   "data": {
     "0700.HK": {
-      "close": 479.0,
-      "chg1d": -1.03,
+      "close": 465.2,
+      "chg1d": -3.88,
       "hi52": 675.134,
       "lo52": 411.0,
-      "rsi": 60.2,
-      "vol_ratio": 0.1,
-      "from_high_pct": -29.1
+      "rsi": 54.2,
+      "vol_ratio": 0.52,
+      "from_high_pct": -31.1
     },
     "0005.HK": {
-      "close": 157.5,
-      "chg1d": 0.38,
+      "close": 157.3,
+      "chg1d": 0.25,
       "hi52": 158.4,
       "lo52": 89.942,
-      "rsi": 71.5,
-      "vol_ratio": 0.11,
-      "from_high_pct": -0.6
+      "rsi": 71.2,
+      "vol_ratio": 0.46,
+      "from_high_pct": -0.7
     },
     "0939.HK": {
-      "close": 8.25,
-      "chg1d": 0.73,
+      "close": 8.22,
+      "chg1d": 0.37,
       "hi52": 8.807,
       "lo52": 6.797,
-      "rsi": 52.7,
-      "vol_ratio": 0.05,
-      "from_high_pct": -6.3
+      "rsi": 51.5,
+      "vol_ratio": 0.34,
+      "from_high_pct": -6.7
     },
     "1398.HK": {
-      "close": 6.91,
-      "chg1d": 0.44,
+      "close": 6.84,
+      "chg1d": -0.58,
       "hi52": 7.29,
       "lo52": 5.273,
-      "rsi": 57.1,
-      "vol_ratio": 0.04,
-      "from_high_pct": -5.2
+      "rsi": 54.0,
+      "vol_ratio": 0.31,
+      "from_high_pct": -6.2
     },
     "3988.HK": {
-      "close": 5.13,
-      "chg1d": 0.59,
+      "close": 5.06,
+      "chg1d": -0.78,
       "hi52": 5.458,
       "lo52": 3.896,
-      "rsi": 55.6,
-      "vol_ratio": 0.03,
-      "from_high_pct": -6.0
+      "rsi": 51.3,
+      "vol_ratio": 0.27,
+      "from_high_pct": -7.3
     },
     "0388.HK": {
-      "close": 396.8,
-      "chg1d": 0.15,
+      "close": 392.6,
+      "chg1d": -0.91,
       "hi52": 452.998,
       "lo52": 360.0,
-      "rsi": 63.0,
-      "vol_ratio": 0.11,
-      "from_high_pct": -12.4
+      "rsi": 58.2,
+      "vol_ratio": 0.47,
+      "from_high_pct": -13.3
     },
     "0066.HK": {
-      "close": 32.28,
-      "chg1d": 1.32,
+      "close": 32.36,
+      "chg1d": 1.57,
       "hi52": 36.841,
       "lo52": 25.364,
-      "rsi": 60.7,
-      "vol_ratio": 0.14,
-      "from_high_pct": -12.4
+      "rsi": 61.4,
+      "vol_ratio": 0.87,
+      "from_high_pct": -12.2
     },
     "0003.HK": {
-      "close": 6.77,
-      "chg1d": 1.2,
+      "close": 6.76,
+      "chg1d": 1.05,
       "hi52": 7.511,
       "lo52": 6.289,
-      "rsi": 56.6,
-      "vol_ratio": 0.22,
-      "from_high_pct": -9.9
+      "rsi": 56.0,
+      "vol_ratio": 0.66,
+      "from_high_pct": -10.0
     },
     "0002.HK": {
-      "close": 77.25,
-      "chg1d": 0.52,
+      "close": 77.35,
+      "chg1d": 0.65,
       "hi52": 78.0,
       "lo52": 61.774,
-      "rsi": 68.4,
-      "vol_ratio": 0.07,
-      "from_high_pct": -1.0
+      "rsi": 68.9,
+      "vol_ratio": 0.68,
+      "from_high_pct": -0.8
     },
     "0016.HK": {
-      "close": 125.8,
-      "chg1d": 2.03,
+      "close": 121.1,
+      "chg1d": -1.78,
       "hi52": 147.9,
       "lo52": 84.782,
-      "rsi": 63.7,
-      "vol_ratio": 0.13,
-      "from_high_pct": -14.9
+      "rsi": 54.7,
+      "vol_ratio": 0.44,
+      "from_high_pct": -18.1
     },
     "0883.HK": {
-      "close": 22.8,
-      "chg1d": -0.35,
+      "close": 22.54,
+      "chg1d": -1.49,
       "hi52": 30.313,
       "lo52": 17.089,
-      "rsi": 50.5,
-      "vol_ratio": 0.04,
-      "from_high_pct": -24.8
+      "rsi": 47.7,
+      "vol_ratio": 0.39,
+      "from_high_pct": -25.6
     },
     "2318.HK": {
-      "close": 55.1,
-      "chg1d": 0.55,
+      "close": 54.25,
+      "chg1d": -1.0,
       "hi52": 72.204,
       "lo52": 46.691,
-      "rsi": 53.9,
-      "vol_ratio": 0.08,
-      "from_high_pct": -23.7
+      "rsi": 49.4,
+      "vol_ratio": 0.39,
+      "from_high_pct": -24.9
     },
     "1299.HK": {
-      "close": 76.0,
-      "chg1d": -0.13,
+      "close": 75.05,
+      "chg1d": -1.38,
       "hi52": 90.58,
       "lo52": 65.898,
-      "rsi": 54.4,
-      "vol_ratio": 0.24,
-      "from_high_pct": -16.1
+      "rsi": 51.0,
+      "vol_ratio": 0.41,
+      "from_high_pct": -17.1
     },
     "0001.HK": {
-      "close": 71.1,
-      "chg1d": 0.92,
+      "close": 70.4,
+      "chg1d": -0.07,
       "hi52": 72.662,
       "lo52": 45.504,
-      "rsi": 60.3,
-      "vol_ratio": 0.07,
-      "from_high_pct": -2.1
+      "rsi": 58.4,
+      "vol_ratio": 0.29,
+      "from_high_pct": -3.1
     },
     "9988.HK": {
-      "close": 116.0,
-      "chg1d": -0.77,
+      "close": 112.9,
+      "chg1d": -3.42,
       "hi52": 185.991,
       "lo52": 88.65,
-      "rsi": 61.8,
-      "vol_ratio": 0.06,
-      "from_high_pct": -37.6
+      "rsi": 56.5,
+      "vol_ratio": 0.54,
+      "from_high_pct": -39.3
     },
     "0175.HK": {
-      "close": 18.86,
-      "chg1d": -2.73,
+      "close": 18.21,
+      "chg1d": -6.09,
       "hi52": 24.959,
       "lo52": 14.574,
-      "rsi": 52.8,
-      "vol_ratio": 0.11,
-      "from_high_pct": -24.4
+      "rsi": 47.8,
+      "vol_ratio": 0.52,
+      "from_high_pct": -27.0
     },
     "0027.HK": {
-      "close": 32.82,
-      "chg1d": 1.11,
+      "close": 32.04,
+      "chg1d": -1.29,
       "hi52": 43.132,
       "lo52": 28.68,
-      "rsi": 64.0,
-      "vol_ratio": 0.09,
-      "from_high_pct": -23.9
+      "rsi": 58.1,
+      "vol_ratio": 0.76,
+      "from_high_pct": -25.7
     },
     "2628.HK": {
-      "close": 27.3,
-      "chg1d": -1.44,
+      "close": 26.72,
+      "chg1d": -3.54,
       "hi52": 35.23,
       "lo52": 17.308,
-      "rsi": 45.7,
-      "vol_ratio": 0.06,
-      "from_high_pct": -22.5
+      "rsi": 43.2,
+      "vol_ratio": 0.66,
+      "from_high_pct": -24.2
     },
     "0688.HK": {
-      "close": 13.62,
-      "chg1d": 0.44,
+      "close": 13.1,
+      "chg1d": -3.39,
       "hi52": 16.369,
       "lo52": 11.135,
-      "rsi": 54.4,
-      "vol_ratio": 0.04,
-      "from_high_pct": -16.8
+      "rsi": 47.1,
+      "vol_ratio": 0.32,
+      "from_high_pct": -20.0
     },
     "AAPL": {
       "close": 333.26,
@@ -178,7 +178,7 @@
       "hi52": 334.68,
       "lo52": 200.704,
       "rsi": 71.4,
-      "vol_ratio": 0.94,
+      "vol_ratio": 0.95,
       "from_high_pct": -0.4
     },
     "MSFT": {
@@ -187,7 +187,7 @@
       "hi52": 551.048,
       "lo52": 349.2,
       "rsi": 56.3,
-      "vol_ratio": 0.73,
+      "vol_ratio": 0.78,
       "from_high_pct": -27.2
     },
     "NVDA": {
@@ -196,7 +196,7 @@
       "hi52": 236.265,
       "lo52": 163.852,
       "rsi": 52.1,
-      "vol_ratio": 0.81,
+      "vol_ratio": 0.85,
       "from_high_pct": -12.2
     },
     "AMZN": {
@@ -205,7 +205,7 @@
       "hi52": 278.56,
       "lo52": 196.0,
       "rsi": 54.2,
-      "vol_ratio": 0.73,
+      "vol_ratio": 0.74,
       "from_high_pct": -10.3
     },
     "GOOGL": {
@@ -259,7 +259,7 @@
       "hi52": 101.99,
       "lo52": 67.19,
       "rsi": 52.7,
-      "vol_ratio": 0.78,
+      "vol_ratio": 0.88,
       "from_high_pct": -27.4
     },
     "NEE": {
@@ -268,7 +268,7 @@
       "hi52": 98.032,
       "lo52": 67.729,
       "rsi": 56.8,
-      "vol_ratio": 0.53,
+      "vol_ratio": 0.69,
       "from_high_pct": -8.9
     },
     "LITE": {
@@ -286,7 +286,7 @@
       "hi52": 127.295,
       "lo52": 84.7,
       "rsi": 57.3,
-      "vol_ratio": 0.85,
+      "vol_ratio": 0.86,
       "from_high_pct": -22.5
     },
     "JPM": {
@@ -295,7 +295,7 @@
       "hi52": 351.24,
       "lo52": 276.434,
       "rsi": 63.4,
-      "vol_ratio": 1.09,
+      "vol_ratio": 1.1,
       "from_high_pct": -2.3
     },
     "BAC": {
@@ -313,7 +313,7 @@
       "hi52": 758.446,
       "lo52": 611.277,
       "rsi": 54.7,
-      "vol_ratio": 0.77,
+      "vol_ratio": 0.86,
       "from_high_pct": -1.0
     },
     "QQQ": {
@@ -322,7 +322,7 @@
       "hi52": 747.828,
       "lo52": 548.916,
       "rsi": 45.6,
-      "vol_ratio": 0.86,
+      "vol_ratio": 0.94,
       "from_high_pct": -5.6
     },
     "SOXL": {
@@ -331,7 +331,7 @@
       "hi52": 302.0,
       "lo52": 22.563,
       "rsi": 40.3,
-      "vol_ratio": 1.28,
+      "vol_ratio": 1.33,
       "from_high_pct": -52.8
     },
     "AMD": {
