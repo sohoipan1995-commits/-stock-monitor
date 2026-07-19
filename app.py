@@ -175,7 +175,6 @@ def score_stock(df):
     close_v  = float(close.iloc[-1])
     bias200  = (close_v-sma200_v)/sma200_v*100 if sma200_v else 0
 
-    # ① 雙周期RSI共振判斷
     weekly_warning = rsi_w_val > 60
     dual_signal = False; dual_desc = ""
     if rsi_val<35 and 28<=rsi_w_val<=50:
@@ -185,7 +184,6 @@ def score_stock(df):
         dual_signal = True
         dual_desc = f"日線極度超賣(日{rsi_val:.0f}/周{rsi_w_val:.0f})"
 
-    # ② 成交量深度分析
     vol_signals = []; vol_bonus = 0
     if len(volume)>=10:
         vol_now   = float(volume.iloc[-1])
@@ -197,13 +195,11 @@ def score_stock(df):
         vol_ratio = vol_now/vol_ma20v if vol_ma20v>0 else 1
         price_5d  = (close_v-float(close.iloc[-5]))/float(close.iloc[-5])*100 if len(close)>=5 else 0
 
-        # A) 連續3日縮量整理
         if (vol_1d<vol_ma20v*0.8 and vol_2d<vol_ma20v*0.8 and
                 vol_3d<vol_ma20v*0.8 and close_v<sma20_v):
             vol_signals.append("連續3日縮量整理")
             vol_bonus += 15
 
-        # B) 放量下跌後縮量（賣壓衰竭）
         if len(volume)>=6:
             if (float(volume.iloc[-4])>vol_ma20v*1.5 and
                     float(close.iloc[-4])<float(close.iloc[-5]) and
@@ -211,17 +207,14 @@ def score_stock(df):
                 vol_signals.append("放量跌後縮量(賣壓衰竭)")
                 vol_bonus += 20
 
-        # C) 爆量陽線吸籌
         if vol_ratio>=2.0 and float(close.iloc[-1])>float(df["open"].iloc[-1]):
             vol_signals.append(f"爆量陽線吸籌({vol_ratio:.1f}x均量)")
             vol_bonus += 25
 
-        # D) 價跌量縮（賣壓不強）
         if price_5d<-3 and vol_ma5v<vol_ma20v*0.7:
             vol_signals.append("價跌量縮(賣壓漸弱)")
             vol_bonus += 12
 
-        # E) OBV量先於價
         if len(obv)>=10:
             obv_5  = float(obv.iloc[-5])
             obv_10 = float(obv.iloc[-10])
@@ -229,7 +222,6 @@ def score_stock(df):
                 vol_signals.append("OBV持續上升(量先於價)")
                 vol_bonus += 20
 
-        # F) MFI資金流
         if mfi_val<25:
             vol_signals.append(f"MFI極低({mfi_val:.0f})資金大量流出")
             vol_bonus += 15
@@ -237,14 +229,12 @@ def score_stock(df):
             vol_signals.append(f"MFI偏低({mfi_val:.0f})")
             vol_bonus += 8
 
-        # G) 52周極度縮量
         if len(volume)>=252:
             vol_52w_min = float(volume.iloc[-252:].min())
             if vol_now<=vol_52w_min*1.15:
                 vol_signals.append("成交量接近52周最低")
                 vol_bonus += 18
 
-    # 短線評分
     rsi_mult = 0.5 if weekly_warning else 1.0
     short_score = 0; short_sig = []
 
@@ -273,7 +263,6 @@ def score_stock(df):
     short_score += min(vol_bonus, 30)
     short_sig.extend(vol_signals)
 
-    # 中線評分
     mid_score = 0; mid_sig = []
 
     if rsi_w_val<35:
@@ -580,7 +569,7 @@ with tab1:
         st.write(f"US Score: {us_score}")
         st.write(f"HK Score: {hk_score}")
         st.write(f"綜合評分: {opportunity_score}")
-        
+
     st.markdown("### 📊 全球宏觀指標")
     kpi_items = [
         ("VIX","😱 恐慌指數"),("VVIX","🌊 波動之波動"),
@@ -709,7 +698,7 @@ with tab1:
         vix_label = "🔥 恐慌區" if vix_now_val>=30 else ("⚠️ 警戒" if vix_now_val>=20 else "😎 貪婪")
         st.markdown(f"<span style='color:{vix_color};font-weight:bold'>現值 {vix_now_val:.2f} — {vix_label}</span> ｜ 30日均值：{vix_mean:.2f}", unsafe_allow_html=True)
         st.plotly_chart(fig_vix, use_container_width=True)
-        
+
         st.markdown("### 📡 美股 vs 港股 詳細氣氛")
         us_col, hk_col = st.columns(2)
 
@@ -1666,12 +1655,11 @@ with tab4:
     else:
         st.warning("找不到足夠數據，請確認代碼（港股用 0700.HK 格式）。")
 
-# ════════════ TAB 5: 四維撈底評分 ════════════════════════════════════════════
+# ════════════ TAB 5: 四維撈底評分（詳細理據版）══════════════════════════════
 with tab5:
-    st.subheader("🎯 四維撈底評分模型（自動觀察名單）")
+    st.subheader("🎯 四維撈底評分模型（附詳細理據）")
     st.caption("技術超賣 40% + 估值低位 30% + 股價回調 15% + 資金訊號 15%")
 
-    # ── 自動使用系統觀察名單 ──
     if market == "🇭🇰 港股":
         auto_tickers = HK_WATCHLIST
     elif market == "🇺🇸 美股":
@@ -1703,45 +1691,72 @@ with tab5:
         scan_list = None
 
     @st.cache_data(ttl=3600, show_spinner=False)
-    def get_valuation_percentile(ticker):
+    def get_stock_info(ticker):
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
-            current_pe = info.get("trailingPE", info.get("forwardPE", None))
-            current_pb = info.get("priceToBook", None)
-            return current_pe, current_pb, None
+            name = info.get("shortName") or info.get("longName") or ticker
+            pe = info.get("trailingPE") or info.get("forwardPE")
+            pb = info.get("priceToBook")
+            return name, pe, pb
         except:
-            return None, None, None
+            return ticker, None, None
 
-    def fund_flow_score(df):
-        if df is None or len(df) < 20:
-            return 0, []
+    def technical_bullish_details(df):
+        if df is None or len(df) < 60:
+            return 0, 0, 0, []
         close = df["close"]
+        rsi = calc_rsi(close).iloc[-1]
+        rsi_w = calc_rsi(close, 70).iloc[-1]
+        K, D, _ = calc_kdj(df)
+        k, d = K.iloc[-1], D.iloc[-1]
+        cci = calc_cci(df).iloc[-1]
+        wr = calc_wr(df).iloc[-1]
+        macd, sig, _ = calc_macd(close)
+        macd_val = macd.iloc[-1]; sig_val = sig.iloc[-1]
+        obv = calc_obv(df)
+        sma20 = close.rolling(20).mean()
+        bb_dn = sma20 - 2 * close.rolling(20).std()
+        sma200 = close.rolling(200).mean()
+        vol_ma20 = volume.rolling(20).mean()
+        mfi = calc_mfi(df).iloc[-1]
+        lo52 = df["low"].rolling(252).min().iloc[-1] if len(df) >= 252 else df["low"].min()
+        price = close.iloc[-1]
         volume = df["volume"]
-        mfi = calc_mfi(df)
-        mfi_now = float(mfi.iloc[-1]) if not pd.isna(mfi.iloc[-1]) else 50
-        ret = close.pct_change()
-        big_down_days = ret < -0.02
-        if big_down_days.sum() == 0:
-            down_vol_ratio = 0
-        else:
-            down_vol = volume[big_down_days].tail(5)
-            avg_vol = volume.rolling(20).mean()
-            down_vol_ratio = (down_vol / avg_vol[big_down_days]).mean()
-        score = 0
-        reasons = []
-        if down_vol_ratio > 0 and down_vol_ratio < 0.8:
-            score += 30
-            reasons.append(f"大跌日縮量(量比{down_vol_ratio:.2f})")
-        elif down_vol_ratio > 0 and down_vol_ratio < 1.1:
-            score += 15
-        if mfi_now < 25:
-            score += 40
-            reasons.append(f"MFI 極低({mfi_now:.0f})")
-        elif mfi_now < 35:
-            score += 20
-            reasons.append(f"MFI 偏低({mfi_now:.0f})")
-        return min(score, 100), reasons
+
+        signals = []
+        signals.append(("RSI(14)<30", rsi < 30, rsi))
+        signals.append(("周RSI<40", rsi_w < 40, rsi_w))
+        signals.append(("K<20", k < 20, k))
+        signals.append(("D<20", d < 20, d))
+        signals.append(("CCI<-100", cci < -100, cci))
+        signals.append(("W%R<-80", wr < -80, wr))
+        signals.append(("MACD金叉", macd_val > sig_val, macd_val - sig_val))
+        obv_5d_ago = obv.iloc[-6] if len(obv) >= 6 else obv.iloc[0]
+        price_5d_ago = close.iloc[-6] if len(close) >= 6 else close.iloc[0]
+        obv_div = (obv.iloc[-1] > obv_5d_ago) and (price <= price_5d_ago)
+        signals.append(("OBV底背離", obv_div, None))
+        signals.append(("收盤<布林下軌", price < bb_dn.iloc[-1], bb_dn.iloc[-1]))
+        vol_ma5 = volume.rolling(5).mean().iloc[-1]
+        vol_shrink = vol_ma5 < vol_ma20.iloc[-1] * 0.8
+        signals.append(("成交量萎縮", vol_shrink, vol_ma5 / vol_ma20.iloc[-1]))
+        signals.append(("MFI<30", mfi < 30, mfi))
+        bias200 = (price - sma200.iloc[-1]) / sma200.iloc[-1] * 100 if sma200.iloc[-1] > 0 else 0
+        signals.append(("乖離200MA<-15%", bias200 < -15, bias200))
+        near_lo = (price - lo52) / lo52 * 100 if lo52 > 0 else 100
+        signals.append(("近52周低點(<10%)", near_lo < 10, near_lo))
+        signals.append(("KDJ超賣區", k < 30 and d < 30, None))
+        signals.append(("CCI<-200", cci < -200, cci))
+
+        bullish_count = sum(1 for _, flag, _ in signals if flag)
+        strong_oversold_count = sum(1 for name, flag, val in signals if flag and (
+            ("RSI" in name and val is not None and val < 25) or
+            ("CCI<-200" in name) or
+            ("K<" in name and val is not None and val < 15) or
+            ("W%R" in name and val is not None and val < -90)
+        ))
+        tech_100, _ = technical_oversold_score(df)
+        return tech_100, tech_100/100.0, bullish_count, strong_oversold_count, signals
 
     def technical_oversold_score(df):
         if df is None or len(df) < 60:
@@ -1753,38 +1768,81 @@ with tab5:
         cci = calc_cci(df).iloc[-1]
         wr = calc_wr(df).iloc[-1]
         score = 0
-        signals = []
-        if rsi < 30:
-            score += 25; signals.append(f"RSI {rsi:.0f}")
-        elif rsi < 40:
-            score += 10
-        if k < 20 and d < 20:
-            score += 25; signals.append(f"KDJ({k:.0f},{d:.0f})")
-        elif k < 30:
-            score += 10
-        if cci < -100:
-            score += 25; signals.append(f"CCI {cci:.0f}")
-        if wr < -85:
-            score += 25; signals.append(f"W%R {wr:.0f}")
-        return min(score, 100), signals
+        if rsi < 30: score += 25
+        elif rsi < 40: score += 10
+        if k < 20 and d < 20: score += 25
+        elif k < 30: score += 10
+        if cci < -100: score += 25
+        if wr < -85: score += 25
+        return min(score, 100), []
+
+    def fund_flow_analysis(df):
+        if df is None or len(df) < 20:
+            return 0, [], "無法分析"
+        close = df["close"]
+        volume = df["volume"]
+        mfi = calc_mfi(df)
+        mfi_now = float(mfi.iloc[-1]) if not pd.isna(mfi.iloc[-1]) else 50
+        ret = close.pct_change()
+        big_down_days = ret < -0.02
+        if big_down_days.sum() == 0:
+            down_vol_ratio = 0
+        else:
+            down_vol = volume[big_down_days].tail(5)
+            avg_vol = volume.rolling(20).mean()
+            valid = avg_vol[big_down_days] > 0
+            if valid.sum() > 0:
+                down_vol_ratio = (down_vol[valid] / avg_vol[big_down_days][valid]).mean()
+            else:
+                down_vol_ratio = 1.0
+        score = 0
+        desc = ""
+        if down_vol_ratio > 0 and down_vol_ratio < 0.8:
+            score += 30
+            desc += "大跌時成交量萎縮，主力未恐慌出逃。"
+        elif down_vol_ratio > 0 and down_vol_ratio < 1.1:
+            score += 15
+        else:
+            desc += "大跌日放量，需警惕主力出貨。"
+        if mfi_now < 25:
+            score += 40
+            desc += f"MFI({mfi_now:.0f})處於極低水平，資金流出已近尾聲。"
+        elif mfi_now < 35:
+            score += 20
+            desc += f"MFI({mfi_now:.0f})偏低，資金略顯流出。"
+        else:
+            desc += f"MFI({mfi_now:.0f})中性。"
+        if len(mfi) >= 10:
+            mfi_start = float(mfi.iloc[-10])
+            mfi_end = float(mfi.iloc[-1])
+            if mfi_end > mfi_start + 5:
+                desc += "近期MFI回升，資金可能回流。"
+            elif mfi_end < mfi_start - 5:
+                desc += "近期MFI續降，資金仍在流出。"
+        return min(score, 100), [], desc
 
     def four_dimension_score(ticker):
         df = fetch_ohlcv(ticker, period="2y")
         if df is None or len(df) < 60:
             return None
-        tech_score, tech_signals = technical_oversold_score(df)
-        pe, pb, _ = get_valuation_percentile(ticker)
+        name, pe, pb = get_stock_info(ticker)
+        tech_100, tech_norm, bull_cnt, strong_cnt, signal_list = technical_bullish_details(df)
+        tech_signals = [s[0] for s in signal_list if s[1]]
         val_score = 0
         val_detail = "無數據"
         if pe is not None:
             if pe < 10:
-                val_score = 90; val_detail = f"PE {pe:.1f} (<10)"
+                val_score = 90
+                val_detail = f"PE {pe:.1f} (<10，極低)"
             elif pe < 15:
-                val_score = 70; val_detail = f"PE {pe:.1f} (10~15)"
+                val_score = 70
+                val_detail = f"PE {pe:.1f} (10~15，偏低)"
             elif pe < 20:
-                val_score = 40; val_detail = f"PE {pe:.1f} (15~20)"
+                val_score = 40
+                val_detail = f"PE {pe:.1f} (15~20，合理)"
             else:
-                val_score = 10; val_detail = f"PE {pe:.1f} (>20)"
+                val_score = 10
+                val_detail = f"PE {pe:.1f} (>20，偏高)"
         hi52 = get_52w_high(df)
         current_price = float(df["close"].iloc[-1])
         drawdown = (current_price - hi52) / hi52 * 100
@@ -1798,24 +1856,54 @@ with tab5:
             dd_score = 20
         else:
             dd_score = 0
-        fund_score, fund_reasons = fund_flow_score(df)
-        total = (0.4 * tech_score +
+        fund_score, _, fund_desc = fund_flow_analysis(df)
+        total = (0.4 * tech_100 +
                  0.3 * val_score +
                  0.15 * dd_score +
                  0.15 * fund_score)
+        if total >= 80:
+            confidence = "高信心"
+        elif total >= 60:
+            confidence = "中等信心"
+        else:
+            confidence = "低信心"
+
+        key_points = []
+        fibs = fib_levels(float(df["low"].rolling(252).min().iloc[-1]) if len(df) >= 252 else df["low"].min(), hi52)
+        next_fib = None
+        for k, v in sorted(fibs.items(), key=lambda x: float(x[0].replace("%","")), reverse=True):
+            if current_price > v:
+                next_fib = (k, v)
+                break
+        if next_fib:
+            key_points.append(f"斐波那契支撐 {next_fib[0]}（{next_fib[1]:.2f}）")
+        sma200 = df["close"].rolling(200).mean().iloc[-1]
+        if current_price < sma200:
+            key_points.append(f"需收復200日均線（{sma200:.2f}）")
+        if strong_cnt >= 2:
+            key_points.append("多個強超賣信號共振，若成交量配合可視為中期底部。")
+        key_points.append("密切關注下一財報業績指引。")
+
         return {
             "ticker": ticker,
+            "name": name,
             "price": round(current_price, 2),
             "total_score": round(total, 1),
-            "tech_score": tech_score,
-            "tech_detail": ", ".join(tech_signals) if tech_signals else "—",
+            "confidence": confidence,
+            "tech_score": tech_100,
+            "tech_norm": tech_norm,
+            "bull_cnt": bull_cnt,
+            "total_signals": len(signal_list),
+            "strong_cnt": strong_cnt,
+            "tech_signals": tech_signals,
             "val_score": val_score,
             "val_detail": val_detail,
             "drawdown": round(drawdown, 1),
             "dd_score": dd_score,
             "fund_score": fund_score,
-            "fund_detail": ", ".join(fund_reasons) if fund_reasons else "—",
+            "fund_desc": fund_desc,
             "hi52": hi52,
+            "key_points": key_points,
         }
 
     if scan_list:
@@ -1840,7 +1928,7 @@ with tab5:
                 "代碼": [r["ticker"] for r in results],
                 "總分": [r["total_score"] for r in results]
             })
-            colors = ["#3fb950" if s>=60 else ("#d29922" if s>=45 else "#f85149") for s in df_plot["總分"]]
+            colors = ["#3fb950" if s>=80 else ("#d29922" if s>=60 else "#f85149") for s in df_plot["總分"]]
             fig = go.Figure(go.Bar(
                 x=df_plot["總分"], y=df_plot["代碼"], orientation="h",
                 marker_color=colors,
@@ -1857,18 +1945,63 @@ with tab5:
             st.plotly_chart(fig, use_container_width=True)
 
             for r in results:
+                confidence_color = "#3fb950" if r["confidence"] == "高信心" else ("#d29922" if r["confidence"] == "中等信心" else "#f85149")
                 with st.expander(
-                    f"**{r['ticker']}** ｜ 現價 {r['price']} ｜ 總分 **{r['total_score']}** ｜ 回撤 {r['drawdown']}%"
+                    f"**{r['name']} ({r['ticker']})** ｜ 現價 {r['price']} ｜ "
+                    f"總分 **{r['total_score']}** ｜ 信心：<span style='color:{confidence_color}'>{r['confidence']}</span>",
+                    expanded=r["total_score"] >= 75
                 ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("🔧 技術超賣", f"{r['tech_score']}/100")
-                    c1.caption(r['tech_detail'])
-                    c2.metric("📉 估值低位", f"{r['val_score']}/100")
-                    c2.caption(r['val_detail'])
-                    c3.metric("📏 回調幅度", f"{r['drawdown']}%")
-                    c3.caption(f"得分 {r['dd_score']}/100")
-                    c4.metric("💰 資金訊號", f"{r['fund_score']}/100")
-                    c4.caption(r['fund_detail'])
+                    st.markdown("#### 📊 四維指標明細")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"""
+                        <div style="background:#161b22; border-radius:8px; padding:12px; margin:4px 0;">
+                            <b style="color:#58a6ff;">🔧 技術面超賣</b><br>
+                            技術評分：<b>+{r['tech_norm']:.3f}</b>（{r['bull_cnt']}/{r['total_signals']} 指標看漲，強超賣 {r['strong_cnt']} 項）<br>
+                            觸發信號：{", ".join(r['tech_signals']) if r['tech_signals'] else "—"}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        st.markdown(f"""
+                        <div style="background:#161b22; border-radius:8px; padding:12px; margin:4px 0;">
+                            <b style="color:#58a6ff;">📉 估值歷史低位</b><br>
+                            {r['val_detail']}<br>
+                            <small>（基於當前PE，歷史百分位需接入數據庫）</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with col2:
+                        st.markdown(f"""
+                        <div style="background:#161b22; border-radius:8px; padding:12px; margin:4px 0;">
+                            <b style="color:#58a6ff;">📏 股價回調幅度</b><br>
+                            52週高位：{r['hi52']} → 現價：{r['price']}，跌幅 <b>{r['drawdown']}%</b>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        st.markdown(f"""
+                        <div style="background:#161b22; border-radius:8px; padding:12px; margin:4px 0;">
+                            <b style="color:#58a6ff;">💰 資金面訊號</b><br>
+                            {r['fund_desc']}<br>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    st.markdown("#### 🔍 為何見底機率高？")
+                    reasons_text = []
+                    if r['tech_100'] >= 70:
+                        reasons_text.append("技術面極度超賣，多個指標發出共振信號，短期反彈概率大。")
+                    elif r['tech_100'] >= 50:
+                        reasons_text.append("技術面明顯超賣，部分指標顯示底部跡象。")
+                    if r['val_score'] >= 70:
+                        reasons_text.append(f"估值處於歷史極低水平（{r['val_detail']}），安全邊際高。")
+                    if r['drawdown'] <= -30:
+                        reasons_text.append(f"股價自52週高位回調超過30%，深度回調提供了較好的入場點。")
+                    if r['fund_score'] >= 50:
+                        reasons_text.append("資金面顯示大跌日主力並未大規模出逃，資金流出已近尾聲或開始回流。")
+                    if not reasons_text:
+                        reasons_text.append("目前暫無充分見底證據，建議觀望等待更多信號。")
+                    for line in reasons_text:
+                        st.markdown(f"- {line}")
+
+                    st.markdown("#### ⚡ 關鍵觀察點")
+                    for point in r['key_points']:
+                        st.markdown(f"- {point}")
         else:
             st.warning("沒有找到有效數據，請確認代碼是否正確。")
     else:
