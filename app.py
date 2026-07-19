@@ -1,6 +1,3 @@
-以下是完整無誤的「撈底監察系統」程式碼，已整合所有五個分頁（包含四維撈底評分匯總表格 + CSV 下載）。直接全選複製，貼上到你的 app.py 檔案即可執行。
-
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
