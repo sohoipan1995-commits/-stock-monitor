@@ -2039,4 +2039,3 @@ with tab5:
 
 st.divider()
 st.caption("⚠️ 本系統僅供技術分析參考，不構成投資建議。數據來自 Yahoo Finance，存在延遲。投資涉及風險，買賣前請自行評估。")
-```
