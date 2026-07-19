@@ -62,12 +62,12 @@ HK_WATCHLIST = [
 
 US_WATCHLIST = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO",
-    "ORCL","ASML","AMD","QCOM","INTC","AMAT","LRCX",
+    "ORCL","ASML","AMD","QCOM","INTC","AMAT","LRCX","MU","SNDK","SKHY",
     "JPM","BAC","GS","MS","BRK-B",
     "COST","WMT","HD","JNJ","UNH",
     "PFE","XOM","NEE","UBER","LITE",
     "CLX","SPY","QQQ","SOXL","IWM",
-]
+    "NFLX","SPCX",]
 
 MACRO_TICKERS = {
     "VIX":"^VIX","VVIX":"^VVIX","SPX":"^GSPC","HSI":"^HSI",
