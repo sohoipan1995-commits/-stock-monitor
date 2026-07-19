@@ -348,21 +348,38 @@ def signal_badge(label):
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_macro():
     result = {}
-    for name,tk in MACRO_TICKERS.items():
-        df = fetch_ohlcv(tk, period="1y")
-        if df is not None and len(df)>1:
-            c   = float(df["close"].iloc[-1])
-            p   = float(df["close"].iloc[-2])
-            chg = (c-p)/p*100
-            hi  = float(df["high"].max()); lo  = float(df["low"].min())
-            pct = (c-lo)/(hi-lo)*100 if hi!=lo else 50
+    for name, tk in MACRO_TICKERS.items():
+        try:
+            df = fetch_ohlcv(tk, period="1y")
+            if df is None or len(df) < 5:
+                continue
+            c = float(df["close"].iloc[-1])
+            p = float(df["close"].iloc[-2])
+            chg = (c - p) / p * 100
+            hi = float(df["high"].max())
+            lo = float(df["low"].min())
+            pct = (c - lo) / (hi - lo) * 100 if hi != lo else 50
+
+            # 安全計算 vol_ratio，避免除零
+            vol_ratio = 1.0
+            if "volume" in df.columns and len(df) >= 20:
+                vol_now = float(df["volume"].iloc[-1])
+                vol_ma = df["volume"].rolling(20).mean().iloc[-1]
+                if pd.notna(vol_ma) and vol_ma > 0:
+                    vol_ratio = vol_now / vol_ma
+
             result[name] = {
-                "val":c,"chg":chg,"pct":pct,"hi":hi,"lo":lo,
-                "rsi":float(calc_rsi(df["close"]).iloc[-1]),
-                "close_series":df["close"].tolist()[-60:],
-                "vol_ratio": (float(df["volume"].iloc[-1])/float(df["volume"].rolling(20).mean().iloc[-1])
-                              if "volume" in df.columns and len(df)>=20 else 1.0),
+                "val": c,
+                "chg": chg,
+                "pct": pct,
+                "hi": hi,
+                "lo": lo,
+                "rsi": float(calc_rsi(df["close"]).iloc[-1]),
+                "close_series": df["close"].tolist()[-60:],
+                "vol_ratio": vol_ratio,
             }
+        except Exception:
+            continue
     return result
 
 # ── 動態權重 ─────────────────────────────────────────────
@@ -443,12 +460,18 @@ with tab1:
                 hi  = float(df["high"].max()); lo  = float(df["low"].min())
                 chg = (c-p)/p*100
                 pct = (c-lo)/(hi-lo)*100 if hi!=lo else 50
+                # 安全計算 vol_ratio
+                vol_ratio = 1.0
+                if "volume" in df.columns and len(df) >= 20:
+                    vol_now = float(df["volume"].iloc[-1])
+                    vol_ma = df["volume"].rolling(20).mean().iloc[-1]
+                    if pd.notna(vol_ma) and vol_ma > 0:
+                        vol_ratio = vol_now / vol_ma
                 result[name] = {
                     "val":c,"chg":chg,"pct":pct,"hi":hi,"lo":lo,
                     "rsi":float(calc_rsi(df["close"]).iloc[-1]),
                     "close_series":df["close"].tolist()[-60:],
-                    "vol_ratio": (float(df["volume"].iloc[-1])/float(df["volume"].rolling(20).mean().iloc[-1])
-                                  if "volume" in df.columns and len(df)>=20 else 1.0),
+                    "vol_ratio": vol_ratio,
                 }
             except: pass
         sp500_sample = [
@@ -2005,71 +2028,4 @@ with tab5:
 
             csv = df_detailed.to_csv(index=False).encode('utf-8')
             st.download_button("⬇️ 下載詳細評分 CSV", data=csv,
-                file_name=f"四維撈底詳細評分_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
-
-            cols = st.columns(4)
-            avg_score = np.mean([r["total_score"] for r in results])
-            best = results[0]; worst = results[-1]
-            cols[0].metric("📊 監察數量", f"{len(results)} 隻")
-            cols[1].metric("🎯 平均總分", f"{avg_score:.1f}")
-            cols[2].metric("🏆 最高分", f"{best['ticker']} {best['total_score']}")
-            cols[3].metric("📉 最低分", f"{worst['ticker']} {worst['total_score']}")
-
-            df_plot = pd.DataFrame({"代碼": [r["ticker"] for r in results], "總分": [r["total_score"] for r in results]})
-            colors = [C_GREEN if s>=80 else (C_ORANGE if s>=60 else C_RED) for s in df_plot["總分"]]
-            fig = go.Figure(go.Bar(x=df_plot["總分"], y=df_plot["代碼"], orientation="h",
-                marker_color=colors, text=[f"{s:.1f}" for s in df_plot["總分"]], textposition="outside"))
-            fig.update_layout(height=100+len(results)*35, paper_bgcolor=C_BG, plot_bgcolor=C_BG,
-                font=dict(color="#e6edf3"), margin=dict(l=10,r=50,t=10,b=10),
-                xaxis=dict(range=[0,100], gridcolor="#21262d"), yaxis=dict(gridcolor="#21262d"))
-            st.plotly_chart(fig, use_container_width=True)
-
-            for r in results:
-                confidence_color = C_GREEN if r["confidence"]=="高信心" else (C_ORANGE if r["confidence"]=="中等信心" else C_RED)
-                with st.expander(
-                    f"**{r['name']} ({r['ticker']})** ｜ 現價 {r['price']} ｜ "
-                    f"總分 **{r['total_score']}** ｜ 信心：<span style='color:{confidence_color}'>{r['confidence']}</span>"
-                ):
-                    st.markdown("#### 🔧 技術面超賣（權重 {}%）".format(round(r['weights']['tech']*100)))
-                    st.markdown(f"- RSI得分：**{r['rsi_score']}** ｜ KDJ得分：**{r['kdj_score']}** ｜ CCI得分：**{r['cci_score']}** ｜ WR得分：**{r['wr_score']}**")
-                    st.markdown(f"→ 技術總分：**{r['tech_total']}** / 100")
-                    st.caption(f"其餘輔助信號：{', '.join(r['tech_signals']) if r['tech_signals'] else '—'}")
-
-                    st.markdown("#### 📉 估值歷史低位（權重 {}%）".format(round(r['weights']['val']*100)))
-                    st.markdown(f"- PE 估值分：**{r['val_score']}**（{r['val_detail']}）\n"
-                                f"- 評分規則：PE<10 → 90分，10-15 → 70分，15-20 → 40分，>20 → 10分")
-
-                    st.markdown("#### 📏 股價回調幅度（權重 {}%）".format(round(r['weights']['dd']*100)))
-                    st.markdown(f"- 52週高：{r['hi52']} → 現價：{r['price']}，跌幅 **{r['drawdown']}%**\n"
-                                f"- 評分規則：≥40% → 90分，30-40% → 70分，20-30% → 50分，10-20% → 20分，<10% → 0分\n"
-                                f"→ 回調得分：**{r['dd_score']}**")
-
-                    st.markdown("#### 💰 資金面訊號（權重 {}%）".format(round(r['weights']['fund']*100)))
-                    st.markdown(f"- 大跌日量得分：**{r['downvol_score']}** ｜ MFI得分：**{r['mfi_score']}** ｜ MFI趨勢得分：**{r['mfi_trend_score']}**")
-                    st.markdown(f"→ 資金總分：**{r['fund_total']}** / 100")
-
-                    st.markdown("#### 🧮 總分計算公式（動態權重）")
-                    st.latex(rf"{r['total_score']} = {r['weights']['tech']:.2f} \times {r['tech_total']} + {r['weights']['val']:.2f} \times {r['val_score']} + {r['weights']['dd']:.2f} \times {r['dd_score']} + {r['weights']['fund']:.2f} \times {r['fund_total']}")
-
-                    st.markdown("#### 🔍 為何見底機率高？")
-                    reasons = []
-                    if r['tech_total']>=70: reasons.append("技術面極度超賣，多個指標發出共振信號。")
-                    elif r['tech_total']>=50: reasons.append("技術面明顯超賣，部分指標顯示底部跡象。")
-                    if r['val_score']>=70: reasons.append(f"估值處於歷史極低水平（{r['val_detail']}），安全邊際高。")
-                    if r['drawdown']<=-30: reasons.append(f"股價自52週高位回調超過30%，深度回調提供了較好的入場點。")
-                    if r['fund_total']>=50: reasons.append("資金面顯示大跌日主力並未大規模出逃，資金流出已近尾聲或開始回流。")
-                    if not reasons: reasons.append("目前暫無充分見底證據，建議觀望等待更多信號。")
-                    for line in reasons: st.markdown(f"- {line}")
-
-                    st.markdown("#### ⚡ 關鍵觀察點")
-                    for point in r['key_points']: st.markdown(f"- {point}")
-        else:
-            st.warning("沒有找到有效數據，請確認代碼是否正確。")
-    else:
-        st.info("👆 點擊「掃描當前觀察名單」即自動分析已選市場的所有股票。")
-
-    st.divider()
-    st.caption("估值百分位目前基於當前 PE 估算，若要更精確的歷史百分位，可接入專業數據庫。")
-
-st.divider()
-st.caption("⚠️ 本系統僅供技術分析參考，不構成投資建議。數據來自 Yahoo Finance，存在延遲。投資涉及風險，買賣前請自行評估。")
+                file_name
