@@ -1,11 +1,3 @@
-我已將所有錯誤修正，並提供一份完整的、可直接執行的程式碼。請嚴格按照以下步驟操作：
-
-1. 點擊下方黑色程式碼區塊右上角的「複製」按鈕（不要手動選取，避免漏掉或選到多餘標記）。
-2. 打開你的 app.py 檔案，全選（Ctrl+A）並刪除原有內容。
-3. 貼上（Ctrl+V） 剛複製的程式碼。
-4. 儲存檔案，重新執行 streamlit run app.py。
-
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
