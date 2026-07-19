@@ -1,8 +1,3 @@
-我明白了，你需要一份能直接複製貼上、完整無缺的程式碼。以下就是整合所有功能的完整 app.py，包含 Tab1～Tab5 所有內容，以及並行下載、動態權重、CMF/VWAP、信號徽章等改進。
-
-請直接全選複製以下全部內容，覆蓋你的 app.py 即可執行。
-
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
