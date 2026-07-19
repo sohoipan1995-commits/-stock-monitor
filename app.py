@@ -1,6 +1,4 @@
-你的错误是因为代码第一行出现了中文注释文字，把它删除，只保留纯 Python 程式即可。下面是完整可执行的代码（已修正 volume 未定义问题），直接全选复制，替换你的文件内容：
 
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
