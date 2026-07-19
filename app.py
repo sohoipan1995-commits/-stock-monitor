@@ -1655,7 +1655,7 @@ with tab4:
     else:
         st.warning("找不到足夠數據，請確認代碼（港股用 0700.HK 格式）。")
 
-# ════════════ TAB 5: 四維撈底評分（詳細理據版）══════════════════════════════
+# ════════════ TAB 5: 四維撈底評分（附詳細評分準則）══════════════════════════════
 with tab5:
     st.subheader("🎯 四維撈底評分模型（附詳細評分準則）")
     st.caption("技術超賣 40% + 估值低位 30% + 股價回調 15% + 資金訊號 15%")
@@ -1783,19 +1783,72 @@ with tab5:
             detail["MFI中性"] = (0, f"{mfi_now:.1f}")
 
         # MFI趨勢
-        trend = "持平"
         if len(mfi_series) >= 10:
             start = float(mfi_series.iloc[-10])
             end = float(mfi_series.iloc[-1])
             if end > start + 5:
-                trend = "上升"
                 detail["MFI近期回升"] = (10, f"+{end-start:.1f}")
             elif end < start - 5:
-                trend = "下降"
                 detail["MFI近期下降"] = (0, f"{end-start:.1f}")
 
         total = sum(v[0] for v in detail.values())
         return min(total, 100), detail
+
+    # 只回傳信號列表
+    def technical_signal_list(df):
+        if df is None or len(df) < 60:
+            return 0, 0, []
+        close = df["close"]
+        volume = df["volume"]
+        rsi = calc_rsi(close).iloc[-1]
+        rsi_w = calc_rsi(close, 70).iloc[-1]
+        K, D, _ = calc_kdj(df)
+        k, d = K.iloc[-1], D.iloc[-1]
+        cci = calc_cci(df).iloc[-1]
+        wr = calc_wr(df).iloc[-1]
+        macd, sig, _ = calc_macd(close)
+        macd_val = macd.iloc[-1]; sig_val = sig.iloc[-1]
+        obv = calc_obv(df)
+        sma20 = close.rolling(20).mean()
+        bb_dn = sma20 - 2 * close.rolling(20).std()
+        sma200 = close.rolling(200).mean()
+        vol_ma20 = volume.rolling(20).mean()
+        mfi = calc_mfi(df).iloc[-1]
+        lo52 = df["low"].rolling(252).min().iloc[-1] if len(df) >= 252 else df["low"].min()
+        price = close.iloc[-1]
+
+        signals = []
+        signals.append(("RSI(14)<30", rsi < 30, rsi))
+        signals.append(("周RSI<40", rsi_w < 40, rsi_w))
+        signals.append(("K<20", k < 20, k))
+        signals.append(("D<20", d < 20, d))
+        signals.append(("CCI<-100", cci < -100, cci))
+        signals.append(("W%R<-80", wr < -80, wr))
+        signals.append(("MACD金叉", macd_val > sig_val, macd_val - sig_val))
+        obv_5d_ago = obv.iloc[-6] if len(obv) >= 6 else obv.iloc[0]
+        price_5d_ago = close.iloc[-6] if len(close) >= 6 else close.iloc[0]
+        obv_div = (obv.iloc[-1] > obv_5d_ago) and (price <= price_5d_ago)
+        signals.append(("OBV底背離", obv_div, None))
+        signals.append(("收盤<布林下軌", price < bb_dn.iloc[-1], bb_dn.iloc[-1]))
+        vol_ma5 = volume.rolling(5).mean().iloc[-1]
+        vol_shrink = vol_ma5 < vol_ma20.iloc[-1] * 0.8
+        signals.append(("成交量萎縮", vol_shrink, vol_ma5 / vol_ma20.iloc[-1]))
+        signals.append(("MFI<30", mfi < 30, mfi))
+        bias200 = (price - sma200.iloc[-1]) / sma200.iloc[-1] * 100 if sma200.iloc[-1] > 0 else 0
+        signals.append(("乖離200MA<-15%", bias200 < -15, bias200))
+        near_lo = (price - lo52) / lo52 * 100 if lo52 > 0 else 100
+        signals.append(("近52周低點(<10%)", near_lo < 10, near_lo))
+        signals.append(("KDJ超賣區", k < 30 and d < 30, None))
+        signals.append(("CCI<-200", cci < -200, cci))
+
+        bullish_count = sum(1 for _, flag, _ in signals if flag)
+        strong_oversold_count = sum(1 for name, flag, val in signals if flag and (
+            ("RSI" in name and val is not None and val < 25) or
+            ("CCI<-200" in name) or
+            ("K<" in name and val is not None and val < 15) or
+            ("W%R" in name and val is not None and val < -90)
+        ))
+        return bullish_count, strong_oversold_count, [s[0] for s in signals if s[1]]
 
     def four_dimension_score(ticker):
         df = fetch_ohlcv(ticker, period="2y")
@@ -1805,9 +1858,7 @@ with tab5:
 
         # 技術面
         tech_total, tech_detail = technical_detail_score(df)
-        # 同時獲取信號列表 (用於展示)
-        _, _, bull_cnt, strong_cnt, signal_list = technical_bullish_details(df)
-        tech_signals = [s[0] for s in signal_list if s[1]]
+        bull_cnt, strong_cnt, tech_signals = technical_signal_list(df)
 
         # 估值
         val_score = 0
@@ -1871,7 +1922,7 @@ with tab5:
             "tech_total": tech_total,
             "tech_detail": tech_detail,
             "bull_cnt": bull_cnt,
-            "total_signals": len(signal_list),
+            "total_signals": len(tech_signals) + 4,
             "strong_cnt": strong_cnt,
             "tech_signals": tech_signals,
             "val_score": val_score,
@@ -1883,62 +1934,6 @@ with tab5:
             "hi52": hi52,
             "key_points": key_points,
         }
-
-    # 保留原有 technical_bullish_details 供內部使用
-    def technical_bullish_details(df):
-        if df is None or len(df) < 60:
-            return 0, 0, 0, 0, []
-        close = df["close"]
-        volume = df["volume"]
-        rsi = calc_rsi(close).iloc[-1]
-        rsi_w = calc_rsi(close, 70).iloc[-1]
-        K, D, _ = calc_kdj(df)
-        k, d = K.iloc[-1], D.iloc[-1]
-        cci = calc_cci(df).iloc[-1]
-        wr = calc_wr(df).iloc[-1]
-        macd, sig, _ = calc_macd(close)
-        macd_val = macd.iloc[-1]; sig_val = sig.iloc[-1]
-        obv = calc_obv(df)
-        sma20 = close.rolling(20).mean()
-        bb_dn = sma20 - 2 * close.rolling(20).std()
-        sma200 = close.rolling(200).mean()
-        vol_ma20 = volume.rolling(20).mean()
-        mfi = calc_mfi(df).iloc[-1]
-        lo52 = df["low"].rolling(252).min().iloc[-1] if len(df) >= 252 else df["low"].min()
-        price = close.iloc[-1]
-
-        signals = []
-        signals.append(("RSI(14)<30", rsi < 30, rsi))
-        signals.append(("周RSI<40", rsi_w < 40, rsi_w))
-        signals.append(("K<20", k < 20, k))
-        signals.append(("D<20", d < 20, d))
-        signals.append(("CCI<-100", cci < -100, cci))
-        signals.append(("W%R<-80", wr < -80, wr))
-        signals.append(("MACD金叉", macd_val > sig_val, macd_val - sig_val))
-        obv_5d_ago = obv.iloc[-6] if len(obv) >= 6 else obv.iloc[0]
-        price_5d_ago = close.iloc[-6] if len(close) >= 6 else close.iloc[0]
-        obv_div = (obv.iloc[-1] > obv_5d_ago) and (price <= price_5d_ago)
-        signals.append(("OBV底背離", obv_div, None))
-        signals.append(("收盤<布林下軌", price < bb_dn.iloc[-1], bb_dn.iloc[-1]))
-        vol_ma5 = volume.rolling(5).mean().iloc[-1]
-        vol_shrink = vol_ma5 < vol_ma20.iloc[-1] * 0.8
-        signals.append(("成交量萎縮", vol_shrink, vol_ma5 / vol_ma20.iloc[-1]))
-        signals.append(("MFI<30", mfi < 30, mfi))
-        bias200 = (price - sma200.iloc[-1]) / sma200.iloc[-1] * 100 if sma200.iloc[-1] > 0 else 0
-        signals.append(("乖離200MA<-15%", bias200 < -15, bias200))
-        near_lo = (price - lo52) / lo52 * 100 if lo52 > 0 else 100
-        signals.append(("近52周低點(<10%)", near_lo < 10, near_lo))
-        signals.append(("KDJ超賣區", k < 30 and d < 30, None))
-        signals.append(("CCI<-200", cci < -200, cci))
-
-        bullish_count = sum(1 for _, flag, _ in signals if flag)
-        strong_oversold_count = sum(1 for name, flag, val in signals if flag and (
-            ("RSI" in name and val is not None and val < 25) or
-            ("CCI<-200" in name) or
-            ("K<" in name and val is not None and val < 15) or
-            ("W%R" in name and val is not None and val < -90)
-        ))
-        return tech_total, tech_total/100.0, bullish_count, strong_oversold_count, signals
 
     if scan_list:
         results = []
