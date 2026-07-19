@@ -1,3 +1,6 @@
+錯誤是因為 technical_bullish_details 函數中使用了 volume 但沒有從 df 中提取。以下是已修復的完整程式碼，直接複製貼上即可執行。
+
+```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -1704,8 +1707,9 @@ with tab5:
 
     def technical_bullish_details(df):
         if df is None or len(df) < 60:
-            return 0, 0, 0, []
+            return 0, 0, 0, 0, []
         close = df["close"]
+        volume = df["volume"]   # <-- 修正：補上 volume 定義
         rsi = calc_rsi(close).iloc[-1]
         rsi_w = calc_rsi(close, 70).iloc[-1]
         K, D, _ = calc_kdj(df)
@@ -1722,7 +1726,6 @@ with tab5:
         mfi = calc_mfi(df).iloc[-1]
         lo52 = df["low"].rolling(252).min().iloc[-1] if len(df) >= 252 else df["low"].min()
         price = close.iloc[-1]
-        volume = df["volume"]
 
         signals = []
         signals.append(("RSI(14)<30", rsi < 30, rsi))
@@ -2012,3 +2015,4 @@ with tab5:
 
 st.divider()
 st.caption("⚠️ 本系統僅供技術分析參考，不構成投資建議。數據來自 Yahoo Finance，存在延遲。投資涉及風險，買賣前請自行評估。")
+```
