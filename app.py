@@ -1,4 +1,4 @@
-錯誤是因為 technical_bullish_details 函數中使用了 volume 但沒有從 df 中提取。以下是已修復的完整程式碼，直接複製貼上即可執行。
+你的错误是因为代码第一行出现了中文注释文字，把它删除，只保留纯 Python 程式即可。下面是完整可执行的代码（已修正 volume 未定义问题），直接全选复制，替换你的文件内容：
 
 ```python
 import streamlit as st
@@ -1709,7 +1709,7 @@ with tab5:
         if df is None or len(df) < 60:
             return 0, 0, 0, 0, []
         close = df["close"]
-        volume = df["volume"]   # <-- 修正：補上 volume 定義
+        volume = df["volume"]
         rsi = calc_rsi(close).iloc[-1]
         rsi_w = calc_rsi(close, 70).iloc[-1]
         K, D, _ = calc_kdj(df)
