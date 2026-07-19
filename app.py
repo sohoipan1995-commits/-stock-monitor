@@ -1,6 +1,3 @@
-你的代码错误是因为最后几行被意外截断了，导致 st.download_button 的括号没有闭合。请直接复制以下完整代码，覆盖你的 app.py 文件即可。这次是完整的、无截断的最终版。
-
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
