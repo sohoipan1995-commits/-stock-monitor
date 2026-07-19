@@ -47,6 +47,8 @@ st.markdown("""
     padding:16px;text-align:center;margin:4px;}
   div[data-testid="metric-container"]{background:#161b22;border:1px solid #30363d;
     border-radius:8px;padding:10px;}
+  .volume-alert{background:#1c2c1a;border:2px solid #3fb950;border-radius:10px;
+    padding:16px;margin:8px 0;color:#e6edf3;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1146,7 +1148,7 @@ with tab1:
                         f"<div style='color:#8b949e;font-size:0.68em'>{'高波動恐慌🔥' if fgi_data['cur_vol10']>2.0 else ('極低波動' if fgi_data['cur_vol10']<0.6 else '正常')}</div></div>",
                         unsafe_allow_html=True)
 
-# ════════════ TAB 2: 個股掃描 ════════════════════════════════════════════════
+# ════════════ TAB 2: 個股掃描（含低位放量提示）══════════════════════════════
 with tab2:
     if market=="🇭🇰 港股":   tickers = HK_WATCHLIST
     elif market=="🇺🇸 美股": tickers = US_WATCHLIST
@@ -1189,6 +1191,48 @@ with tab2:
     st.subheader(f"📊 個股掃描 — {market} ({len(tickers)} 隻)")
     with st.spinner(f"正在掃描 {len(tickers)} 隻股票..."):
         rows = scan_stocks(tuple(tickers), float(vix_now))
+
+    # ───── 🚨 低位大成交量提示 ─────
+    st.markdown("### 🚨 低位大成交量提示（成交量是市場最真實的語言）")
+    volume_alerts = []
+    for r in rows:
+        df = r["_df"]
+        if df is None or len(df) < 20:
+            continue
+        close_now = r["現價"]
+        vol_rat = r["量比"]
+        # 近期低位：20日最低價
+        recent_low = float(df["low"].iloc[-20:].min())
+        pct_above_low = (close_now - recent_low) / recent_low * 100
+        # 條件：股價在近期低點上方3%以內，且成交量放大至20日均量的2倍以上
+        if pct_above_low <= 3 and vol_rat >= 2.0:
+            volume_alerts.append({
+                "代碼": r["代碼"],
+                "現價": close_now,
+                "近期低點": round(recent_low, 3),
+                "距低點%": round(pct_above_low, 1),
+                "量比": vol_rat,
+                "信號": r["信號"],
+            })
+    if volume_alerts:
+        st.success(f"🔥 發現 **{len(volume_alerts)}** 隻股票在低位出現大成交量！主力資金可能正在吸籌。")
+        alert_cols = st.columns(min(len(volume_alerts), 3))
+        for i, alert in enumerate(volume_alerts):
+            with alert_cols[i % 3]:
+                st.markdown(f"""
+                <div class="volume-alert">
+                    <b style="font-size:1.2em;">{alert['代碼']}</b><br>
+                    現價：<b>{alert['現價']}</b><br>
+                    近期低點：{alert['近期低點']}<br>
+                    距低點：<b>{alert['距低點%']}%</b><br>
+                    量比：<b style="color:#3fb950;">{alert['量比']}x</b><br>
+                    信號：{alert['信號']}
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.info("目前沒有股票符合「低位 + 大成交量」的條件。")
+
+    st.divider()
 
     filtered = [r for r in rows
                 if r["信號"] in filter_sig
@@ -1860,18 +1904,34 @@ with tab5:
         tech_total, tech_detail = technical_detail_score(df)
         bull_cnt, strong_cnt, tech_signals = technical_signal_list(df)
 
+        # 提取技術子項分數
+        rsi_score = 0
+        kdj_score = 0
+        cci_score = 0
+        wr_score = 0
+        for k, v in tech_detail.items():
+            score, val = v
+            if "RSI" in k:
+                rsi_score = score
+            elif "KDJ" in k:
+                kdj_score = score
+            elif "CCI" in k:
+                cci_score = score
+            elif "W%R" in k:
+                wr_score = score
+
         # 估值
         val_score = 0
         val_detail = "無數據"
         if pe is not None:
             if pe < 10:
-                val_score = 90; val_detail = f"PE {pe:.1f} (<10，極低)"
+                val_score = 90; val_detail = f"PE {pe:.1f} (<10)"
             elif pe < 15:
-                val_score = 70; val_detail = f"PE {pe:.1f} (10~15，偏低)"
+                val_score = 70; val_detail = f"PE {pe:.1f} (10~15)"
             elif pe < 20:
-                val_score = 40; val_detail = f"PE {pe:.1f} (15~20，合理)"
+                val_score = 40; val_detail = f"PE {pe:.1f} (15~20)"
             else:
-                val_score = 10; val_detail = f"PE {pe:.1f} (>20，偏高)"
+                val_score = 10; val_detail = f"PE {pe:.1f} (>20)"
 
         # 回調
         hi52 = get_52w_high(df)
@@ -1890,6 +1950,18 @@ with tab5:
 
         # 資金面
         fund_total, fund_detail = fund_flow_detail(df)
+        # 提取資金子項
+        downvol_score = 0
+        mfi_score = 0
+        mfi_trend_score = 0
+        for k, v in fund_detail.items():
+            score, val = v
+            if "跌" in k or "量比" in k:
+                downvol_score = score
+            elif "MFI" in k and ("極低" in k or "偏低" in k or "中性" in k):
+                mfi_score = score
+            elif "MFI近期" in k:
+                mfi_trend_score = score
 
         total = 0.4 * tech_total + 0.3 * val_score + 0.15 * dd_score + 0.15 * fund_total
         if total >= 80: confidence = "高信心"
@@ -1920,17 +1992,19 @@ with tab5:
             "total_score": round(total, 1),
             "confidence": confidence,
             "tech_total": tech_total,
-            "tech_detail": tech_detail,
-            "bull_cnt": bull_cnt,
-            "total_signals": len(tech_signals) + 4,
-            "strong_cnt": strong_cnt,
+            "rsi_score": rsi_score,
+            "kdj_score": kdj_score,
+            "cci_score": cci_score,
+            "wr_score": wr_score,
             "tech_signals": tech_signals,
             "val_score": val_score,
             "val_detail": val_detail,
             "drawdown": drawdown,
             "dd_score": dd_score,
             "fund_total": fund_total,
-            "fund_detail": fund_detail,
+            "downvol_score": downvol_score,
+            "mfi_score": mfi_score,
+            "mfi_trend_score": mfi_trend_score,
             "hi52": hi52,
             "key_points": key_points,
         }
@@ -1946,28 +2020,37 @@ with tab5:
             results.sort(key=lambda x: x["total_score"], reverse=True)
 
             st.markdown("---")
-            st.markdown("### 📋 四維評分匯總表")
-            summary_data = []
+            st.markdown("### 📋 四維評分詳細細項表")
+            detailed_data = []
             for r in results:
-                summary_data.append({
+                detailed_data.append({
                     "代碼": r["ticker"],
                     "名稱": r["name"],
                     "現價": r["price"],
                     "總分": r["total_score"],
                     "信心": r["confidence"],
-                    "技術評分": f"{r['tech_total']}",
-                    "估值評分": r["val_score"],
+                    "技術總分": r["tech_total"],
+                    "RSI得分": r["rsi_score"],
+                    "KDJ得分": r["kdj_score"],
+                    "CCI得分": r["cci_score"],
+                    "WR得分": r["wr_score"],
+                    "估值得分": r["val_score"],
                     "回撤%": r["drawdown"],
-                    "資金評分": r["fund_total"],
+                    "回撤得分": r["dd_score"],
+                    "資金總分": r["fund_total"],
+                    "大跌量得分": r["downvol_score"],
+                    "MFI得分": r["mfi_score"],
+                    "MFI趨勢得分": r["mfi_trend_score"],
                 })
-            df_summary = pd.DataFrame(summary_data)
-            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+            df_detailed = pd.DataFrame(detailed_data)
+            st.dataframe(df_detailed, use_container_width=True, hide_index=True)
 
-            csv = df_summary.to_csv(index=False).encode('utf-8')
+            # CSV 下載仍保留
+            csv = df_detailed.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="⬇️ 下載評分匯總 CSV",
+                label="⬇️ 下載詳細評分 CSV",
                 data=csv,
-                file_name=f"四維撈底評分_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                file_name=f"四維撈底詳細評分_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
             )
 
@@ -2000,44 +2083,31 @@ with tab5:
             )
             st.plotly_chart(fig, use_container_width=True)
 
+            # 仍可展開查看詳細準則與公式
             for r in results:
                 confidence_color = "#3fb950" if r["confidence"] == "高信心" else ("#d29922" if r["confidence"] == "中等信心" else "#f85149")
                 with st.expander(
                     f"**{r['name']} ({r['ticker']})** ｜ 現價 {r['price']} ｜ "
-                    f"總分 **{r['total_score']}** ｜ 信心：<span style='color:{confidence_color}'>{r['confidence']}</span>",
-                    expanded=r["total_score"] >= 75
+                    f"總分 **{r['total_score']}** ｜ 信心：<span style='color:{confidence_color}'>{r['confidence']}</span>"
                 ):
-                    # ── 技術面超賣詳細準則 ──
                     st.markdown("#### 🔧 技術面超賣（權重 40%）")
-                    tech_lines = []
-                    for k, v in r["tech_detail"].items():
-                        score, val = v
-                        tech_lines.append(f"- **{k}**：得分 **{score}**（當前值：{val}）")
-                    tech_lines.append(f"→ 技術總分：**{r['tech_total']}** / 100")
-                    st.markdown("\n".join(tech_lines))
+                    st.markdown(f"- RSI得分：**{r['rsi_score']}** ｜ KDJ得分：**{r['kdj_score']}** ｜ CCI得分：**{r['cci_score']}** ｜ WR得分：**{r['wr_score']}**")
+                    st.markdown(f"→ 技術總分：**{r['tech_total']}** / 100")
                     st.caption(f"其餘輔助信號：{', '.join(r['tech_signals']) if r['tech_signals'] else '—'}")
 
-                    # ── 估值準則 ──
                     st.markdown("#### 📉 估值歷史低位（權重 30%）")
                     st.markdown(f"- PE 估值分：**{r['val_score']}**（{r['val_detail']}）\n"
                                 f"- 評分規則：PE<10 → 90分，10-15 → 70分，15-20 → 40分，>20 → 10分")
 
-                    # ── 回調準則 ──
                     st.markdown("#### 📏 股價回調幅度（權重 15%）")
                     st.markdown(f"- 52週高：{r['hi52']} → 現價：{r['price']}，跌幅 **{r['drawdown']}%**\n"
                                 f"- 評分規則：≥40% → 90分，30-40% → 70分，20-30% → 50分，10-20% → 20分，<10% → 0分\n"
                                 f"→ 回調得分：**{r['dd_score']}**")
 
-                    # ── 資金面準則 ──
                     st.markdown("#### 💰 資金面訊號（權重 15%）")
-                    fund_lines = []
-                    for k, v in r["fund_detail"].items():
-                        score, val = v
-                        fund_lines.append(f"- **{k}**：得分 **{score}**（{val}）")
-                    fund_lines.append(f"→ 資金總分：**{r['fund_total']}** / 100")
-                    st.markdown("\n".join(fund_lines))
+                    st.markdown(f"- 大跌日量得分：**{r['downvol_score']}** ｜ MFI得分：**{r['mfi_score']}** ｜ MFI趨勢得分：**{r['mfi_trend_score']}**")
+                    st.markdown(f"→ 資金總分：**{r['fund_total']}** / 100")
 
-                    # ── 加權總分計算式 ──
                     st.markdown("#### 🧮 總分計算公式")
                     st.latex(rf"{r['total_score']} = 0.4 \times {r['tech_total']} + 0.3 \times {r['val_score']} + 0.15 \times {r['dd_score']} + 0.15 \times {r['fund_total']}")
 
