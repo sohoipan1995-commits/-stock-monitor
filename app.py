@@ -1,3 +1,6 @@
+以下是完整無誤的「撈底監察系統」程式碼，已整合所有五個分頁（包含四維撈底評分匯總表格 + CSV 下載）。直接全選複製，貼上到你的 app.py 檔案即可執行。
+
+```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -1833,16 +1836,16 @@ with tab5:
         if pe is not None:
             if pe < 10:
                 val_score = 90
-                val_detail = f"PE {pe:.1f} (<10，極低)"
+                val_detail = f"PE {pe:.1f} (<10)"
             elif pe < 15:
                 val_score = 70
-                val_detail = f"PE {pe:.1f} (10~15，偏低)"
+                val_detail = f"PE {pe:.1f} (10~15)"
             elif pe < 20:
                 val_score = 40
-                val_detail = f"PE {pe:.1f} (15~20，合理)"
+                val_detail = f"PE {pe:.1f} (15~20)"
             else:
                 val_score = 10
-                val_detail = f"PE {pe:.1f} (>20，偏高)"
+                val_detail = f"PE {pe:.1f} (>20)"
         hi52 = get_52w_high(df)
         current_price = float(df["close"].iloc[-1])
         drawdown = (current_price - hi52) / hi52 * 100
@@ -1915,6 +1918,34 @@ with tab5:
                     results.append(res)
         if results:
             results.sort(key=lambda x: x["total_score"], reverse=True)
+
+            # ═══════ 匯總表格 + CSV 匯出 ═══════
+            st.markdown("---")
+            st.markdown("### 📋 四維評分匯總表")
+            summary_data = []
+            for r in results:
+                summary_data.append({
+                    "代碼": r["ticker"],
+                    "名稱": r["name"],
+                    "現價": r["price"],
+                    "總分": r["total_score"],
+                    "信心": r["confidence"],
+                    "技術評分": f"+{r['tech_norm']:.3f} ({r['bull_cnt']}/{r['total_signals']})",
+                    "估值評分": r["val_score"],
+                    "回撤%": r["drawdown"],
+                    "資金評分": r["fund_score"],
+                })
+            df_summary = pd.DataFrame(summary_data)
+            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+            csv = df_summary.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ 下載評分匯總 CSV",
+                data=csv,
+                file_name=f"四維撈底評分_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+            )
+
             cols = st.columns(4)
             avg_score = np.mean([r["total_score"] for r in results])
             best = results[0]
