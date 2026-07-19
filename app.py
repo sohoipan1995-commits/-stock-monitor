@@ -1,8 +1,3 @@
-错误原因是您复制了包含 Markdown 代码块标记（python 和 ）的内容，Python 无法识别。请只复制下面的纯代码（从 import streamlit 开始，到最后的 st.caption(...) 结束）。
-
-以下是无标记的完整代码，直接全选复制替换原文件即可运行：
-
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
