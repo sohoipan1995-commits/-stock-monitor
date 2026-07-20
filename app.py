@@ -5,10 +5,9 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import warnings
-import time
+import warnings, time, math, os, json
 warnings.filterwarnings("ignore")
 
 # ── 嘗試導入富途 API ──────────────────────────────────────
@@ -19,7 +18,7 @@ except ImportError:
     FUTU_AVAILABLE = False
 
 st.set_page_config(
-    page_title="📈 撈底監察系統 (富途版)",
+    page_title="📈 撈底監察系統 Pro",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -28,11 +27,9 @@ st.set_page_config(
 # ── 自動刷新 ──────────────────────
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = time.time()
-
 elapsed = time.time() - st.session_state.last_refresh
 remaining = max(0, 1800 - int(elapsed))
 mins, secs = divmod(remaining, 60)
-
 with st.sidebar:
     st.markdown(f"🔄 自動刷新：**{mins:02d}:{secs:02d}**")
 if st.button("🔄 立即刷新"):
@@ -40,12 +37,12 @@ if st.button("🔄 立即刷新"):
     st.cache_data.clear()
     st.rerun()
 st.divider()
-
 if elapsed >= 1800:
     st.session_state.last_refresh = time.time()
     st.cache_data.clear()
     st.rerun()
 
+# ── 全域樣式 ──────────────────────
 st.markdown("""
 <style>
   [data-testid="stAppViewContainer"]{background:#0d1117;}
@@ -62,6 +59,10 @@ st.markdown("""
   .badge-watch{background:#1c2c1a;color:#d29922;border:1px solid #d29922;}
   .badge-observe{background:#161b22;color:#8b949e;border:1px solid #8b949e;}
   .badge-none{background:#161b22;color:#6e7681;border:1px solid #30363d;}
+  @media (max-width: 768px){
+    .metric-card{padding:8px;}
+    .signal-badge{font-size:0.7em;}
+  }
 </style>
 """, unsafe_allow_html=True)
 
@@ -73,7 +74,6 @@ C_BLUE   = "#58a6ff"
 C_PURPLE = "#bc8cff"
 C_GREY   = "#8b949e"
 C_BG     = "#0d1117"
-C_CARD   = "#161b22"
 
 # ── 觀察名單 ─────────────────────
 HK_WATCHLIST = [
@@ -104,12 +104,10 @@ DROP_LEVELS = [0.10,0.20,0.25,0.30,0.35,0.40]
 # ═══════════ 富途連線初始化 ─────────────────
 @st.cache_resource
 def init_futu_connection():
-    """初始化富途行情上下文，若無法連接則回傳 None"""
     if not FUTU_AVAILABLE:
         return None
     try:
         ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
-        # 簡單測試連線
         ret, _ = ctx.get_market_snapshot(['HK.00700'])
         if ret == RET_OK:
             return ctx
@@ -120,9 +118,7 @@ def init_futu_connection():
 
 quote_ctx = init_futu_connection()
 
-# ── 輔助函數：代碼轉換 ──────────────────
 def to_futu_ticker(ticker):
-    """將 yfinance 格式的代碼轉為富途格式"""
     if ticker.endswith('.HK'):
         code = ticker[:-3]
         return f'HK.{code}'
@@ -134,8 +130,6 @@ def to_futu_ticker(ticker):
 # ── 數據獲取（富途優先）─────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ohlcv(ticker, period="1y", interval="1d"):
-    """獲取K線數據，優先使用富途，失敗則降級到 yfinance"""
-    # 1. 嘗試富途
     if quote_ctx is not None:
         try:
             futu_ticker = to_futu_ticker(ticker)
@@ -152,8 +146,6 @@ def fetch_ohlcv(ticker, period="1y", interval="1d"):
                 return df
         except Exception:
             pass
-
-    # 2. 降級到 yfinance
     try:
         df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
         if df.empty: return None
@@ -179,12 +171,9 @@ def fetch_multiple(tickers, period="2y"):
 # ── 估值與股名獲取（富途即時快照優先）─────────────
 @st.cache_data(ttl=600, show_spinner=False)
 def get_stock_info(ticker):
-    """獲取股名、PE、PB，優先使用富途即時數據"""
     name = ticker
     pe = None
     pb = None
-
-    # 1. 嘗試富途
     if quote_ctx is not None:
         try:
             futu_ticker = to_futu_ticker(ticker)
@@ -198,8 +187,6 @@ def get_stock_info(ticker):
                 if pd.isna(pb): pb = None
         except Exception:
             pass
-
-    # 2. 降級 yfinance (補充名稱或缺失的PE)
     if name == ticker or pe is None:
         try:
             stock = yf.Ticker(ticker)
@@ -218,6 +205,48 @@ def get_stock_info(ticker):
         except Exception:
             pass
     return name, pe, pb
+
+# ── PE 歷史百分位計算 ─────────────────
+@st.cache_data(ttl=86400)
+def get_pe_percentile(ticker, years=5):
+    """
+    利用 Yahoo Finance 財報數據計算歷史 PE 百分位。
+    回傳 (當前 PE, 百分位 0~1, 歷史序列 DataFrame)
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        # 獲取年度或季度財務數據
+        financials = stock.financials  # 年度
+        if financials.empty:
+            # 嘗試季度
+            financials = stock.quarterly_financials
+        if financials.empty:
+            return None, None, None
+        # EPS 通常為 Diluted EPS
+        eps_row = financials.loc[financials.index.str.contains("Diluted EPS")]
+        if eps_row.empty:
+            eps_row = financials.loc[financials.index.str.contains("Basic EPS")]
+        if eps_row.empty:
+            return None, None, None
+        # 取最近一行
+        recent_eps = eps_row.iloc[0]
+        # 獲取歷史股價（月線）
+        hist = yf.download(ticker, period=f"{years}y", interval="1mo", auto_adjust=True, progress=False)
+        if hist.empty:
+            return None, None, None
+        # 粗略計算 PE 序列 (假設 EPS 平均分攤，簡化用常數 EPS)
+        # 更精確需要每季財報日期對齊，此處用年報 EPS 直接除每個月收盤
+        # 計算當前 PE
+        current_price = hist["close"].iloc[-1]
+        if recent_eps.iloc[0] == 0:
+            return None, None, None
+        current_pe = current_price / recent_eps.iloc[0]
+        # 計算歷史 PE 序列
+        pe_series = hist["close"] / recent_eps.iloc[0]
+        percentile = (pe_series < current_pe).mean()
+        return current_pe, percentile, pe_series
+    except Exception:
+        return None, None, None
 
 # ── 技術指標 ─────────────────────
 def calc_rsi(series, period=14):
@@ -279,9 +308,32 @@ def fib_levels(swing_low, swing_high):
 def drop_levels(high_price):
     return {f"-{int(d*100)}%": round(high_price*(1-d),3) for d in DROP_LEVELS}
 
-# ── 核心評分函數（完整版）────────────────
+def get_futu_capital_flow(ticker):
+    """富途資金流向，無法取得時回傳 None"""
+    if quote_ctx is None:
+        return None
+    try:
+        futu_ticker = to_futu_ticker(ticker)
+        ret, data = quote_ctx.get_capital_flow(futu_ticker)
+        if ret == RET_OK and not data.empty:
+            return data
+        return None
+    except Exception:
+        return None
+
+# ── 成交量異常 Z-score ────────────────
+def volume_zscore(df, period=20):
+    """回傳今日成交量在過去 N 日的 Z-score"""
+    vol = df["volume"]
+    if len(vol) < period: return 0
+    mean = vol.rolling(period).mean().iloc[-1]
+    std = vol.rolling(period).std().iloc[-1]
+    if std == 0: return 0
+    return (vol.iloc[-1] - mean) / std
+
+# ═══════════ 核心評分（引入共振規則）═══════════
 def score_stock(df):
-    if df is None or len(df)<60: return 0,0,[]
+    if df is None or len(df)<60: return 0,0,[],[]
     close   = df["close"]
     volume  = df["volume"]
     rsi_d   = calc_rsi(close,14)
@@ -303,134 +355,70 @@ def score_stock(df):
     k_val    = r(K);     d_val     = r(D)
     cci_val  = rv(cci);  wr_val    = rv(wr);  mfi_val = r(mfi)
     macd_val = rv(macd); sig_val   = rv(sig)
-    obv_now  = rv(obv)
-    obv_prev = float(obv.iloc[-6]) if len(obv)>=6 else obv_now
+    obv_now  = rv(obv);  obv_prev = float(obv.iloc[-6]) if len(obv)>=6 else obv_now
     sma200_v = rv(sma200); sma20_v = rv(sma20)
     close_v  = float(close.iloc[-1])
     bias200  = (close_v-sma200_v)/sma200_v*100 if sma200_v else 0
 
+    # 共振標記
+    oversold_count = sum([rsi_val<30, k_val<20 and d_val<20, cci_val<-100, wr_val<-85])
+    strong_resonance = oversold_count >= 2
+    medium_resonance = oversold_count == 1
+
     weekly_warning = rsi_w_val > 60
-    dual_signal = False; dual_desc = ""
-    if rsi_val<35 and 28<=rsi_w_val<=50:
-        dual_signal = True
-        dual_desc = f"⭐雙周期RSI共振(日{rsi_val:.0f}/周{rsi_w_val:.0f})"
-    elif rsi_val<30 and rsi_w_val<55:
-        dual_signal = True
-        dual_desc = f"日線極度超賣(日{rsi_val:.0f}/周{rsi_w_val:.0f})"
+    vol_z = volume_zscore(df)
 
-    vol_signals = []; vol_bonus = 0
-    if len(volume)>=10:
-        vol_now   = float(volume.iloc[-1])
-        vol_1d    = float(volume.iloc[-2]) if len(volume)>=2 else vol_now
-        vol_2d    = float(volume.iloc[-3]) if len(volume)>=3 else vol_now
-        vol_3d    = float(volume.iloc[-4]) if len(volume)>=4 else vol_now
-        vol_ma20v = float(vol_ma20.iloc[-1]) if not pd.isna(vol_ma20.iloc[-1]) else vol_now
-        vol_ma5v  = float(volume.rolling(5).mean().iloc[-1])
-        vol_ratio = vol_now/vol_ma20v if vol_ma20v>0 else 1
-        price_5d  = (close_v-float(close.iloc[-5]))/float(close.iloc[-5])*100 if len(close)>=5 else 0
-
-        if (vol_1d<vol_ma20v*0.8 and vol_2d<vol_ma20v*0.8 and
-                vol_3d<vol_ma20v*0.8 and close_v<sma20_v):
-            vol_signals.append("連續3日縮量整理")
-            vol_bonus += 15
-
-        if len(volume)>=6:
-            if (float(volume.iloc[-4])>vol_ma20v*1.5 and
-                    float(close.iloc[-4])<float(close.iloc[-5]) and
-                    vol_now<vol_ma20v*0.8):
-                vol_signals.append("放量跌後縮量(賣壓衰竭)")
-                vol_bonus += 20
-
-        if vol_ratio>=2.0 and float(close.iloc[-1])>float(df["open"].iloc[-1]):
-            vol_signals.append(f"爆量陽線吸籌({vol_ratio:.1f}x均量)")
-            vol_bonus += 25
-
-        if price_5d<-3 and vol_ma5v<vol_ma20v*0.7:
-            vol_signals.append("價跌量縮(賣壓漸弱)")
-            vol_bonus += 12
-
-        if len(obv)>=10:
-            obv_5  = float(obv.iloc[-5])
-            obv_10 = float(obv.iloc[-10])
-            if obv_now>obv_5>obv_10 and close_v<=float(close.iloc[-5]):
-                vol_signals.append("OBV持續上升(量先於價)")
-                vol_bonus += 20
-
-        if mfi_val<25:
-            vol_signals.append(f"MFI極低({mfi_val:.0f})資金大量流出")
-            vol_bonus += 15
-        elif mfi_val<35:
-            vol_signals.append(f"MFI偏低({mfi_val:.0f})")
-            vol_bonus += 8
-
-        if len(volume)>=252:
-            vol_52w_min = float(volume.iloc[-252:].min())
-            if vol_now<=vol_52w_min*1.15:
-                vol_signals.append("成交量接近52周最低")
-                vol_bonus += 18
-
-    rsi_mult = 0.5 if weekly_warning else 1.0
     short_score = 0; short_sig = []
-
-    if rsi_val<30:
-        short_score += int(15*rsi_mult)
-        short_sig.append(f"日RSI超賣({rsi_val:.0f})" + ("⚠️" if weekly_warning else ""))
-    elif rsi_val<40:
-        short_score += int(8*rsi_mult)
-
-    if k_val<20 and d_val<20:
-        short_score += 15; short_sig.append(f"KDJ超賣({k_val:.0f})")
-    elif k_val<30: short_score += 7
-
-    if macd_val>sig_val and macd_val<0:
-        short_score += 12; short_sig.append("MACD低位金叉")
-
-    if cci_val<-100:
-        short_score += 10; short_sig.append(f"CCI超賣({cci_val:.0f})")
-
-    if wr_val<-85:
-        short_score += 8; short_sig.append(f"WR超賣({wr_val:.0f})")
-
-    if dual_signal:
-        short_score += 20; short_sig.append(dual_desc)
-
-    short_score += min(vol_bonus, 30)
-    short_sig.extend(vol_signals)
-
     mid_score = 0; mid_sig = []
 
-    if rsi_w_val<35:
-        mid_score += 25; mid_sig.append(f"周RSI超賣({rsi_w_val:.0f})")
-    elif rsi_w_val<45:
-        mid_score += 12
+    # 成交量確認係數
+    vol_confirm = 1.0
+    if vol_z > 2.5 and float(close.iloc[-1]) > float(df["open"].iloc[-1]):
+        vol_confirm = 1.5   # 爆量陽線，增強信號
+        short_sig.append("🔥爆量確認")
+    elif vol_z < -1.5 and close_v < sma20_v:
+        vol_confirm = 0.7   # 縮量下跌，減弱信號
+        short_sig.append("⚠️縮量下跌")
+
+    # 技術超賣給分（根據共振調整）
+    if strong_resonance:
+        if rsi_val<30: short_score += int(20 * vol_confirm)
+        if k_val<20 and d_val<20: short_score += int(20 * vol_confirm)
+        if cci_val<-100: short_score += int(15 * vol_confirm)
+        if wr_val<-85: short_score += int(10 * vol_confirm)
+        short_sig.append("⚡強共振超賣")
+    elif medium_resonance:
+        if rsi_val<30: short_score += int(10 * vol_confirm)
+        if k_val<20 and d_val<20: short_score += int(10 * vol_confirm)
+        if cci_val<-100: short_score += int(8 * vol_confirm)
+        if wr_val<-85: short_score += int(5 * vol_confirm)
+        short_sig.append("🔹弱共振超賣")
+    else:
+        if rsi_val<30: short_score += int(5 * vol_confirm)
+        if k_val<20 and d_val<20: short_score += int(5 * vol_confirm)
+
+    if macd_val>sig_val and macd_val<0:
+        short_score += 10 * vol_confirm
+        short_sig.append("MACD低位金叉")
+
+    # OBV背離
+    if obv_now>obv_prev and close_v<=float(close.iloc[-6]):
+        short_score += 12 * vol_confirm
+        short_sig.append("OBV底背離")
+
+    # 中線評分
+    if rsi_w_val<35: mid_score += 20
+    elif rsi_w_val<45: mid_score += 10
+    if bias200<-20: mid_score += 20
+    elif bias200<-10: mid_score += 10
+    if cci_val<-150: mid_score += 10
+
     if weekly_warning:
-        mid_score = int(mid_score*0.6)
+        mid_score = int(mid_score * 0.6)
         mid_sig.append("⚠️周線仍強(小心假底)")
 
-    if k_val<25 and d_val<25:
-        mid_score += 20; mid_sig.append("周KDJ低位")
-
-    if bias200<-20:
-        mid_score += 20; mid_sig.append(f"年線乖離{bias200:.1f}%")
-    elif bias200<-10:
-        mid_score += 10
-
-    if obv_now>obv_prev and close_v<=float(close.iloc[-6]):
-        mid_score += 20; mid_sig.append("OBV底背離吸籌")
-
-    if cci_val<-150:
-        mid_score += 15; mid_sig.append(f"CCI極度超賣({cci_val:.0f})")
-
-    if dual_signal:
-        mid_score += 15
-        if dual_desc not in mid_sig: mid_sig.append(dual_desc)
-
-    mid_score += min(vol_bonus//2, 20)
-    for vs in vol_signals:
-        if vs not in mid_sig: mid_sig.append(vs)
-
     signals = list(dict.fromkeys(short_sig+mid_sig))
-    return min(short_score,100), min(mid_score,100), signals
+    return min(short_score,100), min(mid_score,100), signals, oversold_count
 
 def signal_label(short, mid):
     if short>=70 or mid>=70: return "🔥 強烈撈底","buy"
@@ -472,8 +460,19 @@ def get_dynamic_weights(vix_val):
     elif vix_val<=15: return {"tech":0.30,"val":0.40,"dd":0.15,"fund":0.15}
     else: return {"tech":0.40,"val":0.30,"dd":0.15,"fund":0.15}
 
+# ── 信號追蹤器（歷史信號儲存）─────────────
+SIGNAL_LOG_FILE = "signal_log.csv"
+def log_signal(ticker, total_score, label, price, date):
+    try:
+        df_log = pd.read_csv(SIGNAL_LOG_FILE)
+    except FileNotFoundError:
+        df_log = pd.DataFrame(columns=["date","ticker","total_score","label","price"])
+    new_row = {"date":date,"ticker":ticker,"total_score":total_score,"label":label,"price":price}
+    df_log = pd.concat([df_log, pd.DataFrame([new_row])], ignore_index=True)
+    df_log.to_csv(SIGNAL_LOG_FILE, index=False)
+
 # ═══════════ HEADER ═════════════════════════════════════════
-st.markdown("<h1 style='color:#58a6ff;margin-bottom:0'>📈 撈底監察系統 (富途數據)</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:#58a6ff;margin-bottom:0'>📈 撈底監察系統 Pro</h1>", unsafe_allow_html=True)
 st.markdown(f"<p style='color:#8b949e'>最後更新：{datetime.now().strftime('%Y-%m-%d %H:%M')} HKT ｜ 數據：富途 + Yahoo Finance</p>", unsafe_allow_html=True)
 st.divider()
 
@@ -490,7 +489,7 @@ with st.sidebar:
         default=["🔥 強烈撈底","⭐️ 值得關注"])
     min_short = st.slider("最低短線分",0,100,0)
     min_mid   = st.slider("最低中線分",0,100,0)
-    # 富途連線狀態
+    # 富途狀態
     if quote_ctx is not None:
         st.success("✅ 富途API 已連線")
     else:
@@ -500,28 +499,25 @@ with st.sidebar:
     st.markdown("""
 **短線分（0-100）** 5-15日操作
 - 雙周期RSI共振（日<35+周28-50）
-- KDJ/CCI/WR超賣
+- KDJ/CCI/WR超賣（強共振加分）
 - MACD低位金叉
-- 爆量陽線/縮量整理/量先於價
+- 成交量確認（爆量陽線提升信號）
 
 **中線分（0-100）** 1-3個月操作
 - 周RSI < 35
 - 200日均線乖離 < -20%
 - OBV底背離吸籌
-- 成交量底部形態
 
 **⭐ 最強入場信號**
 日線RSI<35 + 周線RSI在30-50
 = 雙周期共振，真底部概率最高
-
-**⚠️ 注意**
-周線RSI>60時日線超賣
-= 只是短暫彈跳，不是真底
     """)
+    # ═══════════ 第二部分：各 Tab 頁面與主邏輯 ═══════════════════════════════
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🌍 市場氣氛", "📊 個股掃描", "📐 回撤計算",
+    "📈 技術圖表", "🎯 四維撈底評分", "📋 信號追蹤"
+])
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 市場氣氛","📊 個股掃描","📐 回撤計算","📈 技術圖表","🎯 四維撈底評分"])
-
-# ═══════════ 以下為各 Tab 內容（第二部分將提供完整 with 區塊）═══════════
 # ═══════════ TAB 1: 市場氣氛 ═══════════════════════════════
 with tab1:
     st.subheader("🌍 宏觀市場氣氛儀表板")
@@ -564,7 +560,6 @@ with tab1:
     st.markdown("### 🎯 撈底機會總評")
     g_col1, g_col2, g_col3 = st.columns([1,1,1])
 
-    # 簡單機會評分（基於 VIX）
     vix_score = 0
     if vix_now >= 30: vix_score = 80
     elif vix_now >= 25: vix_score = 60
@@ -656,12 +651,13 @@ with tab2:
         chg1d = (close_v-float(df["close"].iloc[-2]))/float(df["close"].iloc[-2])*100
         vol_ma = float(df["volume"].rolling(20).mean().iloc[-1]) or 1
         vol_rat = float(df["volume"].iloc[-1])/vol_ma
-        short_s,mid_s,sigs = score_stock(df)
+        short_s,mid_s,sigs,resonance = score_stock(df)
         label,stype = signal_label(short_s,mid_s)
         swing_lo = float(df["low"].iloc[-126:].min())
         rsi_w_v = float(calc_rsi(df["close"],70).iloc[-1])
         cmf_val = float(calc_cmf(df).iloc[-1])
         vwap_val = float(calc_vwap(df).iloc[-1])
+        vol_z = volume_zscore(df)
 
         vix_env = "🔥 極度恐慌" if vix_now>=30 else ("⚠️ 高波動" if vix_now>=25 else ("😎 市場貪婪" if vix_now<=15 else "😐 中性"))
 
@@ -678,11 +674,12 @@ with tab2:
             "觸發指標":"、".join(sigs) if sigs else "—",
             "_drop":drop_levels(hi52),
             "_fib":fib_levels(swing_lo,hi52),
-            "_df":df, "cmf":round(cmf_val,3), "vwap":round(vwap_val,3)
+            "_df":df, "cmf":round(cmf_val,3), "vwap":round(vwap_val,3),
+            "vol_z":round(vol_z,2), "resonance":resonance
         })
 
-    # ───── 低位大成交量提示（放寬條件） ─────
-    st.markdown("### 🚨 低位大成交量提示（距20日低點≤5% 且 量比≥1.5 且 收陽線）")
+    # ───── 低位大成交量提示（含 Z-score）─────
+    st.markdown("### 🚨 低位大成交量提示（距20日低點≤5% 且 Z-score≥2.0 且 收陽線）")
     volume_alerts = []
     for r in rows:
         df = r["_df"]
@@ -692,15 +689,16 @@ with tab2:
         recent_low = float(df["low"].iloc[-20:].min())
         pct_above_low = (close_now - recent_low) / recent_low * 100
         is_positive = float(df["close"].iloc[-1]) > float(df["open"].iloc[-1])
-        if pct_above_low <= 5 and vol_rat >= 1.5 and is_positive:
+        if pct_above_low <= 5 and r["vol_z"] >= 2.0 and is_positive:
             volume_alerts.append({
                 "代碼": r["代碼"], "現價": close_now,
                 "近期低點": round(recent_low,3),
                 "距低點%": round(pct_above_low,1),
                 "量比": vol_rat, "信號": r["信號"],
+                "Z-score": r["vol_z"]
             })
     if volume_alerts:
-        st.success(f"🔥 發現 **{len(volume_alerts)}** 隻股票低位放量！")
+        st.success(f"🔥 發現 **{len(volume_alerts)}** 隻股票低位放量（含Z-score判斷）！")
         alert_cols = st.columns(min(len(volume_alerts), 3))
         for i, alert in enumerate(volume_alerts):
             with alert_cols[i % 3]:
@@ -711,6 +709,7 @@ with tab2:
                     近期低點：{alert['近期低點']}<br>
                     距低點：<b>{alert['距低點%']}%</b><br>
                     量比：<b style="color:#3fb950;">{alert['量比']}x</b><br>
+                    Z-score：<b>{alert['Z-score']}</b><br>
                     信號：{alert['信號']}
                 </div>
                 """, unsafe_allow_html=True)
@@ -757,10 +756,14 @@ with tab2:
                 recent_low = float(df_vol["low"].iloc[-20:].min())
                 pct_above = (r["現價"] - recent_low) / recent_low * 100
                 is_pos = float(df_vol["close"].iloc[-1]) > float(df_vol["open"].iloc[-1])
-                low_detail = f"距20日低點: {pct_above:.1f}% | 量比: {r['量比']} | 收陽: {'是' if is_pos else '否'}"
+                low_detail = f"距20日低點: {pct_above:.1f}% | 量比: {r['量比']} | Z-score: {r['vol_z']} | 收陽: {'是' if is_pos else '否'}"
+            # 共振強度
+            resonance_text = ""
+            if r["resonance"] >= 2: resonance_text = "⚡強共振"
+            elif r["resonance"] == 1: resonance_text = "🔹弱共振"
             with st.expander(
                 f"<span class='signal-badge {badge_class}'>{r['信號']}</span>  {r['代碼']}  現價 {r['現價']}  "
-                f"({r['1日漲跌%']:+.1f}%)  ｜ 短線:{r['短線分']}  中線:{r['中線分']}{weekly_warn_str}"
+                f"({r['1日漲跌%']:+.1f}%)  ｜ 短線:{r['短線分']}  中線:{r['中線分']}{weekly_warn_str} {resonance_text}"
             ):
                 c1,c2,c3,c4,c5,c6 = st.columns(6)
                 c1.metric("現價",r["現價"])
@@ -776,12 +779,10 @@ with tab2:
                     vol_s    = df_vol["volume"]
                     vol_m20  = vol_s.rolling(20).mean()
                     vol_ma20v = float(vol_m20.iloc[-1])
-                    vol_ratios = (vol_s.iloc[-5:]/vol_m20.iloc[-5:].replace(0,np.nan)).round(2)
                     is_shrinking = all(float(vol_s.iloc[-i])<vol_ma20v*0.85 for i in range(1,4))
                     is_expanding = float(vol_s.iloc[-1])>vol_ma20v*1.5
                     is_diverging = (float(vol_s.iloc[-1])<vol_ma20v*0.7 and
                                     float(df_vol["close"].iloc[-1])<float(df_vol["close"].iloc[-2]))
-
                     vol_tags = []
                     if is_shrinking: vol_tags.append("<span style='background:#0d2818;color:#3fb950;padding:3px 8px;border-radius:4px;font-size:0.8em'>📉 縮量整理</span>")
                     if is_expanding: vol_tags.append("<span style='background:#1c2c1a;color:#3fb950;padding:3px 8px;border-radius:4px;font-size:0.8em'>📈 放量介入</span>")
@@ -789,7 +790,7 @@ with tab2:
                     st.markdown("**量能形態：** " + (" ".join(vol_tags) if vol_tags else "正常"), unsafe_allow_html=True)
 
                     dates_5 = [str(d)[:10] for d in df_vol.index[-5:]]
-                    vr_list = vol_ratios.fillna(1).tolist()
+                    vr_list = (vol_s.iloc[-5:]/vol_m20.iloc[-5:].replace(0,np.nan)).round(2).fillna(1).tolist()
                     bar_c5  = [C_GREEN if v>=1 else C_RED for v in vr_list]
                     fig_mini = go.Figure(go.Bar(
                         x=dates_5,y=vr_list,marker_color=bar_c5,
@@ -801,8 +802,7 @@ with tab2:
                     fig_mini.update_layout(title="近5日量比",height=200,
                         paper_bgcolor=C_BG,plot_bgcolor=C_BG,
                         font=dict(color="#e6edf3"),margin=dict(l=5,r=5,t=35,b=5),showlegend=False)
-                    fig_mini.update_xaxes(gridcolor="#21262d")
-                    fig_mini.update_yaxes(gridcolor="#21262d")
+                    fig_mini.update_xaxes(gridcolor="#21262d"); fig_mini.update_yaxes(gridcolor="#21262d")
                     st.plotly_chart(fig_mini, use_container_width=True)
 
                 d1,d2 = st.columns(2)
@@ -900,7 +900,7 @@ with tab4:
         for i in range(1,8): fig_tech.update_xaxes(gridcolor="#21262d",row=i,col=1); fig_tech.update_yaxes(gridcolor="#21262d",row=i,col=1)
         st.plotly_chart(fig_tech, use_container_width=True)
 
-        short_s,mid_s,sigs = score_stock(df_ch)
+        short_s,mid_s,sigs,_ = score_stock(df_ch)
         label,_ = signal_label(short_s,mid_s)
         close_v = float(df_ch["close"].iloc[-1])
         rsi_now = float(calc_rsi(df_ch["close"]).iloc[-1]); rsi_w_now = float(calc_rsi(df_ch["close"],70).iloc[-1])
@@ -913,9 +913,9 @@ with tab4:
         elif rsi_w_now>60 and rsi_now<35: st.markdown(f"<div style='background:#1c1a00;border:1px solid #9e6a03;border-radius:8px;padding:12px;margin-top:8px'><b style='color:{C_ORANGE}'>⚠️ 注意：周線RSI仍強</b><br>建議等周線RSI回落至50以下再操作。</div>", unsafe_allow_html=True)
     else: st.warning("找不到足夠數據。")
 
-# ═══════════ TAB 5: 四維撈底評分（含估值修正）══════════════
+# ═══════════ TAB 5: 四維撈底評分（含 PE 百分位、資金流向）══════════
 with tab5:
-    st.subheader("🎯 四維撈底評分模型（附詳細評分準則）")
+    st.subheader("🎯 四維撈底評分模型（附 PE 百分位 & 資金流向）")
     st.caption("技術超賣 40% + 估值低位 30% + 股價回調 15% + 資金訊號 15%（動態調整）")
 
     if market == "🇭🇰 港股": auto_tickers = HK_WATCHLIST
@@ -986,12 +986,26 @@ with tab5:
             elif "KDJ" in k: kdj_score = v[0]
             elif "CCI" in k: cci_score = v[0]
             elif "W%R" in k: wr_score = v[0]
+
+        # 估值（含 PE 百分位）
         val_score = 50; val_detail = "無數據(預設50分)"
+        pe_percentile = None
         if pe is not None and pe > 0:
-            if pe < 10: val_score=90; val_detail=f"PE {pe:.1f} (<10)"
-            elif pe < 15: val_score=70; val_detail=f"PE {pe:.1f} (10~15)"
-            elif pe < 20: val_score=40; val_detail=f"PE {pe:.1f} (15~20)"
-            else: val_score=10; val_detail=f"PE {pe:.1f} (>20)"
+            # 嘗試取得歷史百分位
+            hist_pe, perc, _ = get_pe_percentile(ticker)
+            if perc is not None:
+                pe_percentile = perc
+                if perc < 0.1: val_score = 90; val_detail = f"PE {pe:.1f}，歷史百分位 {perc*100:.0f}% (極低)"
+                elif perc < 0.25: val_score = 70; val_detail = f"PE {pe:.1f}，歷史百分位 {perc*100:.0f}% (偏低)"
+                elif perc < 0.5: val_score = 40; val_detail = f"PE {pe:.1f}，歷史百分位 {perc*100:.0f}% (中等)"
+                else: val_score = 10; val_detail = f"PE {pe:.1f}，歷史百分位 {perc*100:.0f}% (偏高)"
+            else:
+                # 無百分位資料，仍用絕對 PE
+                if pe < 10: val_score=90; val_detail=f"PE {pe:.1f} (<10)"
+                elif pe < 15: val_score=70; val_detail=f"PE {pe:.1f} (10~15)"
+                elif pe < 20: val_score=40; val_detail=f"PE {pe:.1f} (15~20)"
+                else: val_score=10; val_detail=f"PE {pe:.1f} (>20)"
+
         hi52 = get_52w_high(df)
         current_price = float(df["close"].iloc[-1])
         drawdown = (current_price-hi52)/hi52*100
@@ -1000,6 +1014,7 @@ with tab5:
         elif drawdown<=-20: dd_score=50
         elif drawdown<=-10: dd_score=20
         else: dd_score=0
+
         fund_total, fund_detail = fund_flow_detail(df)
         downvol_score = mfi_score = mfi_trend_score = 0
         for k,v in fund_detail.items():
@@ -1007,34 +1022,58 @@ with tab5:
             elif "MFI" in k and ("極低" in k or "偏低" in k or "中性" in k): mfi_score = v[0]
             elif "MFI近期" in k: mfi_trend_score = v[0]
 
+        # 富途資金流向（若有）
+        capital_flow = get_futu_capital_flow(ticker)
+        capital_bonus = 0
+        capital_detail = ""
+        if capital_flow is not None and not capital_flow.empty:
+            # 僅展示最新一筆的流入/流出
+            latest = capital_flow.iloc[-1]
+            inflow = latest.get('in_flow', 0) if 'in_flow' in latest else 0
+            if inflow > 0:
+                capital_bonus = 10
+                capital_detail = f"主力流入 {inflow:.0f}萬"
+            else:
+                capital_detail = "主力流出"
+        fund_total = min(fund_total + capital_bonus, 100)
+
         macro = fetch_macro()
         vix_v = macro.get("VIX",{}).get("val",20) if isinstance(macro.get("VIX"),dict) else 20
         w = get_dynamic_weights(vix_v)
         total = w["tech"]*tech_total + w["val"]*val_score + w["dd"]*dd_score + w["fund"]*fund_total
         total = round(total,1)
         confidence = "高信心" if total>=80 else ("中等信心" if total>=60 else "低信心")
+
         return {
             "ticker":ticker,"name":name,"price":round(current_price,2),
             "total_score":total,"confidence":confidence,
             "tech_total":tech_total,"rsi_score":rsi_score,"kdj_score":kdj_score,
             "cci_score":cci_score,"wr_score":wr_score,
             "val_score":val_score,"val_detail":val_detail,
+            "pe_percentile":pe_percentile,
             "drawdown":drawdown,"dd_score":dd_score,
             "fund_total":fund_total,"downvol_score":downvol_score,
             "mfi_score":mfi_score,"mfi_trend_score":mfi_trend_score,
+            "capital_detail":capital_detail,
             "hi52":hi52,"weights":w,"vix":vix_v
         }
 
     if scan_list:
         results = []
-        with st.spinner(f"正在掃描 {len(scan_list)} 隻股票..."):
+        with st.spinner(f"正在掃描 {len(scan_list)} 隻股票（含 PE 百分位計算）..."):
             for tk in scan_list:
                 res = four_dimension_score(tk)
                 if res: results.append(res)
         if results:
             results.sort(key=lambda x: x["total_score"], reverse=True)
+
+            # 記錄強信號
+            for r in results:
+                if r["total_score"] >= 70:
+                    log_signal(r["ticker"], r["total_score"], r["confidence"], r["price"], datetime.now().strftime("%Y-%m-%d"))
+
             st.markdown("---")
-            st.markdown("### 📋 四維評分詳細細項表（動態權重）")
+            st.markdown("### 📋 四維評分詳細細項表（動態權重 + PE 百分位 + 資金流向）")
             w_disp = results[0]["weights"]
             st.caption(f"目前 VIX = {results[0]['vix']:.1f}，權重：技術 {w_disp['tech']:.0%} / 估值 {w_disp['val']:.0%} / 回調 {w_disp['dd']:.0%} / 資金 {w_disp['fund']:.0%}")
             detailed_data = []
@@ -1044,15 +1083,19 @@ with tab5:
                     "總分":r["total_score"],"信心":r["confidence"],
                     "技術總分":r["tech_total"],"RSI得分":r["rsi_score"],
                     "KDJ得分":r["kdj_score"],"CCI得分":r["cci_score"],
-                    "WR得分":r["wr_score"],"估值得分":r["val_score"],
+                    "WR得分":r["wr_score"],
+                    "估值得分":r["val_score"],
+                    "PE百分位":f"{r['pe_percentile']*100:.0f}%" if r['pe_percentile'] is not None else "N/A",
                     "回撤%":r["drawdown"],"回撤得分":r["dd_score"],
                     "資金總分":r["fund_total"],"大跌量得分":r["downvol_score"],
                     "MFI得分":r["mfi_score"],"MFI趨勢得分":r["mfi_trend_score"],
+                    "富途資金":r["capital_detail"] if r["capital_detail"] else "未取得"
                 })
             df_detailed = pd.DataFrame(detailed_data)
             st.dataframe(df_detailed, use_container_width=True, hide_index=True)
             csv = df_detailed.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇️ 下載詳細評分 CSV", data=csv, file_name=f"四維撈底詳細評分_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
+            st.download_button("⬇️ 下載詳細評分 CSV", data=csv,
+                file_name=f"四維撈底詳細評分_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
 
             cols = st.columns(4)
             avg_score = np.mean([r["total_score"] for r in results])
@@ -1072,7 +1115,27 @@ with tab5:
     else:
         st.info("👆 點擊「掃描當前觀察名單」即自動分析已選市場的所有股票。")
     st.divider()
-    st.caption("估值百分位目前基於當前 PE 估算，若無法取得則預設 50 分。")
+    st.caption("估值百分位基於 Yahoo Finance 財務數據估算，僅供參考。")
+
+# ═══════════ TAB 6: 信號追蹤 ═══════════════════════════════
+with tab6:
+    st.subheader("📋 信號追蹤器")
+    st.markdown("每當「四維撈底評分」總分 ≥ 70 時，系統會自動記錄信號，方便後續追蹤績效。")
+    try:
+        df_log = pd.read_csv(SIGNAL_LOG_FILE)
+        if not df_log.empty:
+            df_log["date"] = pd.to_datetime(df_log["date"])
+            df_log = df_log.sort_values("date", ascending=False)
+            st.dataframe(df_log, use_container_width=True, hide_index=True)
+            # 簡單績效統計
+            if len(df_log) >= 2:
+                st.markdown("#### 📊 最近信號追蹤（模擬績效）")
+                recent = df_log.iloc[0]
+                st.write(f"最新信號：{recent['ticker']} @ {recent['price']}，分數 {recent['total_score']}，日期 {recent['date'].date()}")
+        else:
+            st.info("尚無信號記錄，當掃描時總分≥70的股票會自動出現在此。")
+    except FileNotFoundError:
+        st.info("信號記錄檔案不存在，將在第一次掃描時建立。")
 
 st.divider()
 st.caption("⚠️ 本系統僅供技術分析參考，不構成投資建議。數據來自富途 API 及 Yahoo Finance，可能存在延遲。")
