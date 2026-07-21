@@ -7,23 +7,38 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import warnings, time
+import warnings, time, math, os, json, threading
 warnings.filterwarnings("ignore")
 
+# 可选套件
 try:
     from futu import OpenQuoteContext, RET_OK, KLType
     FUTU_AVAILABLE = True
 except ImportError:
     FUTU_AVAILABLE = False
 
-st.set_page_config(page_title="📈 撈底監察系統 Pro", page_icon="📈", layout="wide")
+try:
+    import schedule
+    SCHEDULE_AVAILABLE = True
+except ImportError:
+    SCHEDULE_AVAILABLE = False
 
+try:
+    from fpdf import FPDF
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
+st.set_page_config(page_title="📈 撈底監察系統 Pro+", page_icon="📈", layout="wide")
+
+# ── 自动刷新逻辑 ──
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = time.time()
 elapsed = time.time() - st.session_state.last_refresh
 remaining = max(0, 1800 - int(elapsed))
+mins, secs = divmod(remaining, 60)
 with st.sidebar:
-    st.markdown(f"🔄 自動刷新：**{divmod(remaining, 60)[0]:02d}:{divmod(remaining, 60)[1]:02d}**")
+    st.markdown(f"🔄 自動刷新：**{mins:02d}:{secs:02d}**")
 if st.button("🔄 立即刷新"):
     st.session_state.last_refresh = time.time()
     st.cache_data.clear()
@@ -33,6 +48,7 @@ if elapsed >= 1800:
     st.cache_data.clear()
     st.rerun()
 
+# ── 样式 ──
 st.markdown("""
 <style>
   [data-testid="stAppViewContainer"]{background:#0d1117;}
@@ -58,6 +74,7 @@ US_WATCHLIST = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","ORCL",
 MACRO_TICKERS = {"VIX":"^VIX","VVIX":"^VVIX","SPX":"^GSPC","HSI":"^HSI","DXY":"DX-Y.NYB","US10Y":"^TNX","VHSI":"^VHSI","HYG":"HYG","USDHKD":"USDHKD=X"}
 FIB_LEVELS=[0.236,0.382,0.500,0.618,0.786]; DROP_LEVELS=[0.10,0.20,0.25,0.30,0.35,0.40]
 
+# 富途连线
 @st.cache_resource
 def init_futu():
     if not FUTU_AVAILABLE: return None
@@ -66,7 +83,6 @@ def init_futu():
         ret, _ = ctx.get_market_snapshot(['HK.00700'])
         return ctx if ret == RET_OK else None
     except: return None
-
 quote_ctx = init_futu()
 
 def to_futu(t): return f'HK.{t[:-3]}' if t.endswith('.HK') else (f'US.{t}' if t.isalpha() else t)
@@ -121,7 +137,7 @@ def get_stock_info(ticker):
         except: pass
     return name, pe, pb
 
-# 技術指標函數（與之前相同，此處省略貼上完整版，請從前面複製）
+# ── 技术指标（保持不变）──
 def calc_rsi(series, period=14):
     delta = series.diff(); gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
@@ -168,7 +184,53 @@ def volume_zscore(df, period=20):
     vol = df["volume"]; mean = vol.rolling(period).mean().iloc[-1]; std = vol.rolling(period).std().iloc[-1]
     return (vol.iloc[-1] - mean) / std if std!=0 else 0
 
-def score_stock(df):
+# ── 技术形态识别 ──
+def detect_double_bottom(df, lookback=60, tolerance=0.03):
+    """简单双底检测，返回 True/False"""
+    if len(df) < lookback: return False
+    recent = df.iloc[-lookback:]
+    lows = recent['low']
+    # 找两个显著低点
+    min_idx = lows.idxmin()
+    min_val = lows.min()
+    # 找第一个低点（排除最近10天）
+    first_low = lows.iloc[:-10].min()
+    if first_low > 0 and abs(first_low - min_val) / first_low < tolerance:
+        return True
+    return False
+
+def detect_macd_bullish_divergence(df):
+    """MACD柱背离：价格新低但MACD柱未新低"""
+    close = df['close']
+    macd, signal, hist = calc_macd(close)
+    # 找最近两个低点
+    recent = df.iloc[-60:]
+    lows = recent['low']
+    price_lows = lows.nsmallest(2)
+    if len(price_lows) < 2: return False
+    # 比较对应MACD柱
+    idx1, idx2 = price_lows.index[0], price_lows.index[1]
+    if idx1 not in hist.index or idx2 not in hist.index: return False
+    if hist.loc[idx2] > hist.loc[idx1] and close.iloc[-1] < close.loc[idx1]:
+        return True
+    return False
+
+# ── 时间衰减函数 ──
+def time_decay(df, indicator_series, days_back=5):
+    """返回过去days_back天内指标信号的衰减加权和"""
+    weight_sum = 0
+    for i in range(days_back):
+        idx = -1 - i
+        if abs(idx) > len(indicator_series): break
+        val = indicator_series.iloc[idx] if not pd.isna(indicator_series.iloc[idx]) else 50
+        # 简单线性衰减，越近权重越大
+        weight = 1 - (i / (days_back + 1))
+        if val < 30:  # 超卖状态
+            weight_sum += weight
+    return weight_sum
+
+# ── 改进的评分函数（加入时间衰减、形态加分、市场状态）──
+def score_stock(df, market_state="neutral"):
     if df is None or len(df)<60: return 0,0,[],0,"無",0,0,0
     close=df["close"]; volume=df["volume"]
     rsi_d=calc_rsi(close,14); rsi_w=calc_rsi(close,70)
@@ -183,11 +245,18 @@ def score_stock(df):
     obv_prev=float(obv.iloc[-6]) if len(obv)>=6 else obv_now
     close_v=float(close.iloc[-1]); vol_z=volume_zscore(df)
 
+    # 时间衰减因子（过去5天）
+    decay_rsi = time_decay(df, rsi_d, 5)
+    decay_kdj = time_decay(df, K, 5)  # 使用K值
+    decay_cci = time_decay(df, cci, 5)
+    decay_wr = time_decay(df, wr, 5)
+
+    # 共振判断
     triggers=[]
-    if rsi_val<30: triggers.append("RSI")
-    if k_val<20 and d_val<20: triggers.append("KDJ")
-    if cci_val<-100: triggers.append("CCI")
-    if wr_val<-85: triggers.append("W%R")
+    if rsi_val<30 or decay_rsi>1.5: triggers.append("RSI")
+    if (k_val<20 and d_val<20) or decay_kdj>1.5: triggers.append("KDJ")
+    if cci_val<-100 or decay_cci>1.5: triggers.append("CCI")
+    if wr_val<-85 or decay_wr>1.5: triggers.append("W%R")
     oversold_count=len(triggers)
     if oversold_count>=3: resonance="強"; mult=1.5
     elif oversold_count==2: resonance="中"; mult=1.2
@@ -215,6 +284,14 @@ def score_stock(df):
     if cmf_val>0.2: short_sig.append("💰CMF吸籌")
     elif cmf_val<-0.2: short_sig.append("⚠️CMF派發")
 
+    # 形态加分
+    if detect_double_bottom(df):
+        short_score += 10
+        short_sig.append("🕳️雙底形態")
+    if detect_macd_bullish_divergence(df):
+        short_score += 15
+        short_sig.append("📉MACD底背離(強)")
+
     mid_score=0; mid_sig=[]; bias200=(close_v-sma200.iloc[-1])/sma200.iloc[-1]*100 if sma200.iloc[-1] else 0
     weekly_warning = rsi_w_val>60
     if rsi_w_val<35: mid_score+=20; mid_sig.append("周RSI超賣")
@@ -223,6 +300,14 @@ def score_stock(df):
     elif bias200<-10: mid_score+=10
     if cci_val<-150: mid_score+=10; mid_sig.append("CCI極度超賣")
     if weekly_warning: mid_score=int(mid_score*0.6); mid_sig.append("⚠️周線仍強(小心假底)")
+
+    # 市场状态调整
+    if market_state == "bear_high_vol":
+        short_score = int(short_score * 1.1)  # 熊市高波动，超卖更有效
+        mid_score = int(mid_score * 1.1)
+    elif market_state == "bull_low_vol":
+        short_score = int(short_score * 0.9)  # 牛市低波动，超卖信号减弱
+
     signals=list(dict.fromkeys(short_sig+mid_sig))
     return min(short_score,100), min(mid_score,100), signals, oversold_count, resonance, round(cmf_val,3), round(vwap_val,2), round(vol_z,2)
 
@@ -257,6 +342,30 @@ def fetch_macro():
         except: continue
     return result
 
+# ── 市场状态分类器 ──
+def classify_market_state():
+    """根据SPY或HSI的走势和VIX分类"""
+    try:
+        spy = fetch_ohlcv("SPY", period="6mo")
+        if spy is None: return "unknown", 0, 0
+        close = spy['close']
+        ret_60 = (close.iloc[-1] / close.iloc[-60] - 1) * 100
+        volatility = close.pct_change().rolling(20).std().iloc[-1] * np.sqrt(252) * 100  # 年化波动率
+        vix = fetch_macro().get("VIX", {}).get("val", 20)
+
+        if ret_60 < -5 and vix > 25:
+            return "bear_high_vol", ret_60, volatility
+        elif ret_60 < -5 and vix <= 25:
+            return "bear_low_vol", ret_60, volatility
+        elif ret_60 > 5 and vix > 25:
+            return "bull_high_vol", ret_60, volatility
+        elif ret_60 > 5 and vix <= 25:
+            return "bull_low_vol", ret_60, volatility
+        else:
+            return "neutral", ret_60, volatility
+    except:
+        return "unknown", 0, 0
+
 def get_dynamic_weights(vix_val):
     if vix_val>=30: return {"tech":0.50,"val":0.25,"dd":0.10,"fund":0.15}
     elif vix_val>=25: return {"tech":0.45,"val":0.25,"dd":0.15,"fund":0.15}
@@ -270,10 +379,41 @@ def log_signal(ticker, total_score, label, price, date):
     df_log = pd.concat([df_log, pd.DataFrame([{"date":date,"ticker":ticker,"total_score":total_score,"label":label,"price":price}])], ignore_index=True)
     df_log.to_csv(SIGNAL_LOG_FILE, index=False)
 
-st.markdown("<h1 style='color:#58a6ff;margin-bottom:0'>📈 撈底監察系統 Pro</h1>", unsafe_allow_html=True)
+# ── 背景数据引擎（简化版，使用Streamlit的定时刷新）──
+def background_scanner():
+    """可以在独立线程中定时运行，但这里我们只是封装以备后用"""
+    # 实际使用时，可以用schedule库定时调用
+    pass
+
+# ── 风险管理计算 ──
+def calculate_position(price, stop_loss, account_size=100000, risk_pct=0.02):
+    """计算建议股数"""
+    risk_amount = account_size * risk_pct
+    per_share_risk = abs(price - stop_loss)
+    if per_share_risk <= 0: return 0
+    shares = int(risk_amount / per_share_risk)
+    return shares, risk_amount
+
+# ── 生成PDF报告 ──
+def generate_pdf_report(results, market_state, vix):
+    if not PDF_AVAILABLE: return None
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="每日撈底報告", ln=1, align='C')
+    pdf.cell(200, 10, txt=f"市場狀態: {market_state}  VIX: {vix:.1f}", ln=1)
+    pdf.ln(10)
+    for r in results[:10]:
+        line = f"{r['ticker']} 價格{r['price']} 總分{r['total_score']}"
+        pdf.cell(200, 10, txt=line, ln=1)
+    return pdf.output(dest='S').encode('latin-1')
+
+# ═══════════ HEADER ═════════════════════════════════════════
+st.markdown("<h1 style='color:#58a6ff;margin-bottom:0'>📈 撈底監察系統 Pro+</h1>", unsafe_allow_html=True)
 st.markdown(f"<p style='color:#8b949e'>最後更新：{datetime.now().strftime('%Y-%m-%d %H:%M')} HKT ｜ 數據：富途 + Yahoo Finance</p>", unsafe_allow_html=True)
 st.divider()
 
+# ═══════════ SIDEBAR ═══════════════════════════════════════
 with st.sidebar:
     st.markdown("## ⚙️ 控制面板")
     market = st.radio("市場", ["🇭🇰 港股","🇺🇸 美股","📋 自選"], index=1)
@@ -294,15 +434,21 @@ with st.sidebar:
     - KDJ/CCI/WR超賣（強共振加分）
     - MACD低位金叉
     - CMF/VWAP資金流向確認
+    - 技術形態（雙底、MACD背離）
     **中線分（0-100）** 1-3個月操作
     - 周RSI < 35
     - 200日均線乖離 < -20%
     - OBV底背離吸籌
     """)
+    # ═══════════ 第二部分：所有 Tab 頁面與進階功能 ═══════════════════════════════
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+# 獲取市場狀態
+market_state, market_ret, market_vol = classify_market_state()
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🌍 市場氣氛", "📊 個股掃描", "📐 回撤計算",
-    "📈 技術圖表", "🎯 四維撈底評分", "📋 信號追蹤"
+    "📈 技術圖表", "🎯 四維撈底評分", "📋 信號追蹤與績效",
+    "⚖️ 風險管理"
 ])
 
 # ═══════════ TAB 1: 市場氣氛 ═══════════════════════════════
@@ -310,6 +456,24 @@ with tab1:
     st.subheader("🌍 宏觀市場氣氛儀表板")
     macro_now = fetch_macro()
     vix_now = macro_now.get("VIX",{}).get("val",20) if isinstance(macro_now.get("VIX"),dict) else 20
+
+    # 顯示市場狀態分類
+    state_map = {
+        "bear_high_vol": "🐻 熊市高波動",
+        "bear_low_vol": "🐻 熊市低波動",
+        "bull_high_vol": "🐂 牛市高波動",
+        "bull_low_vol": "🐂 牛市低波動",
+        "neutral": "😐 中性",
+        "unknown": "❓ 無法判斷"
+    }
+    st.markdown(f"### 當前市場狀態：{state_map.get(market_state, market_state)}")
+    st.caption(f"SPY 60日回報：{market_ret:.1f}% | 年化波動率：{market_vol:.1f}% | VIX：{vix_now:.1f}")
+    if market_state == "bear_high_vol":
+        st.info("📌 策略建議：熊市高波動下，超賣信號可信度較高，可分批撈底，嚴格止損。")
+    elif market_state == "bull_low_vol":
+        st.info("📌 策略建議：牛市低波動下，超賣信號可能只是短暫回調，降低撈底權重，以持倉為主。")
+
+    st.divider()
 
     st.markdown("### 📊 全球宏觀指標")
     kpi_items = [
@@ -385,7 +549,7 @@ with tab1:
     with g_col2: st.plotly_chart(make_gauge(vix_score, "🇭🇰 港股撈底機會"), use_container_width=True)
     with g_col3: st.plotly_chart(make_gauge(vix_score, "🌍 綜合評分"), use_container_width=True)
 
-# ═══════════ TAB 2: 個股掃描（含總表說明、指標解釋）══════════
+# ═══════════ TAB 2: 個股掃描（含時間衰減、形態信號、指標說明）══════════
 with tab2:
     if market=="🇭🇰 港股":   tickers = HK_WATCHLIST
     elif market=="🇺🇸 美股": tickers = US_WATCHLIST
@@ -433,7 +597,8 @@ with tab2:
     for tk in tickers:
         df = data_map.get(tk)
         if df is None or len(df)<60: continue
-        short_s,mid_s,sigs,oversold_count,resonance,cmf_val,vwap_val,vol_z = score_stock(df)
+        # 傳入市場狀態
+        short_s,mid_s,sigs,oversold_count,resonance,cmf_val,vwap_val,vol_z = score_stock(df, market_state)
         label,stype = signal_label(short_s,mid_s)
         close_v = float(df["close"].iloc[-1])
         hi52 = get_52w_high(df)
@@ -555,60 +720,46 @@ with tab2:
                 with col_a:
                     st.metric("CMF (資金流)", f"{r['cmf']:.3f}")
                     if r['cmf'] > 0.2:
-                        st.caption("💰 資金明顯流入")
-                        st.caption("→ 主力吸籌，可跟進")
+                        st.caption("💰 資金明顯流入 → 主力吸籌，可跟進")
                     elif r['cmf'] > 0:
-                        st.caption("✅ 資金輕微流入")
-                        st.caption("→ 等待進一步確認")
+                        st.caption("✅ 資金輕微流入 → 等待進一步確認")
                     elif r['cmf'] > -0.2:
-                        st.caption("⚠️ 資金輕微流出")
-                        st.caption("→ 小心再跌一段")
+                        st.caption("⚠️ 資金輕微流出 → 小心再跌一段")
                     else:
-                        st.caption("❌ 資金明顯流出 (派發)")
-                        st.caption("→ 暫不進場，等止穩")
+                        st.caption("❌ 資金明顯流出 (派發) → 暫不進場")
 
                 # VWAP
                 with col_b:
                     st.metric("VWAP (均價)", f"{r['vwap']:.2f}")
                     if r['現價'] > r['vwap']:
-                        st.caption("📈 股價在均價之上 (強勢)")
-                        st.caption("→ 買盤願追價，可輕倉")
+                        st.caption("📈 股價在均價之上 (強勢) → 買盤願追價")
                     else:
-                        st.caption("📉 股價在均價之下 (弱勢)")
-                        st.caption("→ 等站回 VWAP 再考慮")
+                        st.caption("📉 股價在均價之下 (弱勢) → 等站回 VWAP")
 
                 # Z-score
                 with col_c:
                     st.metric("成交量 Z-score", f"{r['vol_z']:.2f}")
                     if r['vol_z'] > 2.0:
-                        st.caption("🔥 極度放量")
-                        st.caption("→ 恐慌拋售或主力吸籌，觀察後續")
+                        st.caption("🔥 極度放量 → 恐慌拋售或主力吸籌")
                     elif r['vol_z'] > 1.0:
-                        st.caption("📈 明顯放量")
-                        st.caption("→ 有資金關注，可列入觀察")
+                        st.caption("📈 明顯放量 → 有資金關注")
                     elif r['vol_z'] < -1.5:
-                        st.caption("❄️ 極度縮量")
-                        st.caption("→ 無人問津，等待放量信號")
+                        st.caption("❄️ 極度縮量 → 等待放量信號")
                     else:
                         st.caption("正常量")
-                        st.caption("→ 成交量無異常")
 
                 # 共振
                 with col_d:
                     st.metric("共振指標數", f"{r['oversold_count']}/4")
                     triggers_desc = "RSI, KDJ, CCI, W%R"
                     if r['resonance'] == "強":
-                        st.caption(f"⚡ 強共振 ({triggers_desc})")
-                        st.caption("→ 多指標同時超賣，進場信心高")
+                        st.caption(f"⚡ 強共振 ({triggers_desc}) → 進場信心高")
                     elif r['resonance'] == "中":
-                        st.caption(f"🔹 中共振 ({triggers_desc})")
-                        st.caption("→ 部分指標確認，可小量試單")
+                        st.caption(f"🔹 中共振 ({triggers_desc}) → 可小量試單")
                     elif r['resonance'] == "弱":
-                        st.caption(f"▪️ 弱共振 ({triggers_desc})")
-                        st.caption("→ 信號較弱，等待更多確認")
+                        st.caption(f"▪️ 弱共振 ({triggers_desc}) → 等待更多確認")
                     else:
-                        st.caption(f"— 無共振 ({triggers_desc})")
-                        st.caption("→ 尚無超賣共識，暫觀望")
+                        st.caption(f"— 無共振 ({triggers_desc}) → 暫觀望")
 
                 st.markdown("---")
                 st.markdown(f"**觸發指標：** {r['觸發指標']}")
@@ -676,7 +827,7 @@ with tab2:
         | **VWAP** | 成交量加權平均價（當日公平價） | 股價 > VWAP 強勢，< VWAP 弱勢 |
         | **Z-score** | 成交量異常程度（標準差倍數） | >2.0 極度放量，< -1.5 極度縮量 |
         | **共振** | RSI、KDJ、CCI、W%R 中幾個同時超賣 | ≥3 強共振，2 中共振，1 弱共振 |
-        | **短線分** | 綜合超賣、量能、資金流的短期評分 | >70 強烈撈底，>50 值得關注 |
+        | **短線分** | 綜合超賣、量能、資金流、形態的短期評分 | >70 強烈撈底，>50 值得關注 |
         | **中線分** | 綜合中線超賣、輔助因子的中期評分 | >50 中期底部機會，>30 可追蹤 |
         """)
 
@@ -771,7 +922,7 @@ with tab4:
         for i in range(1,8): fig_tech.update_xaxes(gridcolor="#21262d",row=i,col=1); fig_tech.update_yaxes(gridcolor="#21262d",row=i,col=1)
         st.plotly_chart(fig_tech, use_container_width=True)
 
-        short_s,mid_s,sigs,_,_,_,_,_ = score_stock(df_ch)
+        short_s,mid_s,sigs,_,_,_,_,_ = score_stock(df_ch, market_state)
         label,_ = signal_label(short_s,mid_s)
         close_v = float(df_ch["close"].iloc[-1])
         rsi_now = float(calc_rsi(df_ch["close"]).iloc[-1]); rsi_w_now = float(calc_rsi(df_ch["close"],70).iloc[-1])
@@ -784,7 +935,7 @@ with tab4:
         elif rsi_w_now>60 and rsi_now<35: st.markdown(f"<div style='background:#1c1a00;border:1px solid #9e6a03;border-radius:8px;padding:12px;margin-top:8px'><b style='color:{C_ORANGE}'>⚠️ 注意：周線RSI仍強</b><br>建議等周線RSI回落至50以下再操作。</div>", unsafe_allow_html=True)
     else: st.warning("找不到足夠數據。")
 
-# ═══════════ TAB 5: 四維撈底評分（維持先前已修正版本）══════════
+# ═══════════ TAB 5: 四維撈底評分（含 PE 百分位、資金流）══════════
 with tab5:
     st.subheader("🎯 四維撈底評分模型（附 PE 百分位 & 資金流向）")
     st.caption("技術超賣 40% + 估值低位 30% + 股價回調 15% + 資金訊號 15%（動態調整）")
@@ -851,7 +1002,7 @@ with tab5:
         if df is None or len(df)<60: return None
         name, pe, pb = get_stock_info(ticker)
 
-        short_s, mid_s, sigs, _, _, _, _, _ = score_stock(df)
+        short_s, mid_s, sigs, _, _, _, _, _ = score_stock(df, market_state)
 
         tech_total, tech_detail = technical_detail_score(df)
         rsi_score = kdj_score = cci_score = wr_score = 0
@@ -975,6 +1126,13 @@ with tab5:
             fig = go.Figure(go.Bar(x=df_plot["總分"], y=df_plot["代碼"], orientation="h", marker_color=colors, text=[f"{s:.1f}" for s in df_plot["總分"]], textposition="outside"))
             fig.update_layout(height=100+len(results)*35, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), margin=dict(l=10,r=50,t=10,b=10), xaxis=dict(range=[0,100], gridcolor="#21262d"), yaxis=dict(gridcolor="#21262d"))
             st.plotly_chart(fig, use_container_width=True)
+
+            # PDF 報告按鈕
+            if PDF_AVAILABLE:
+                pdf_data = generate_pdf_report(results, market_state, vix_now)
+                if pdf_data:
+                    st.download_button("📄 下載今日撈底報告 (PDF)", data=pdf_data,
+                        file_name=f"撈底報告_{datetime.now().strftime('%Y%m%d')}.pdf", mime="application/pdf")
         else:
             st.warning("沒有找到有效數據。")
     else:
@@ -982,24 +1140,107 @@ with tab5:
     st.divider()
     st.caption("估值百分位基於 Yahoo Finance 財務數據估算，僅供參考。")
 
-# ═══════════ TAB 6: 信號追蹤 ═══════════════════════════════
+# ═══════════ TAB 6: 信號追蹤與回測績效 ═══════════════════════════════
 with tab6:
-    st.subheader("📋 信號追蹤器")
-    st.markdown("每當「四維撈底評分」總分 ≥ 70 時，系統會自動記錄信號，方便後續追蹤績效。")
+    st.subheader("📋 信號追蹤與績效回測")
+    st.markdown("每當「四維撈底評分」總分 ≥ 70 時，系統會自動記錄信號，並在此追蹤後續績效。")
     try:
         df_log = pd.read_csv(SIGNAL_LOG_FILE)
         if not df_log.empty:
             df_log["date"] = pd.to_datetime(df_log["date"])
             df_log = df_log.sort_values("date", ascending=False)
             st.dataframe(df_log, use_container_width=True, hide_index=True)
-            if len(df_log) >= 2:
-                st.markdown("#### 📊 最近信號追蹤（模擬績效）")
-                recent = df_log.iloc[0]
-                st.write(f"最新信號：{recent['ticker']} @ {recent['price']}，分數 {recent['total_score']}，日期 {recent['date'].date()}")
+
+            # 績效回測：計算每筆信號發出後 N 日的回報
+            st.markdown("---")
+            st.markdown("### 📊 信號績效回測")
+            hold_days = st.selectbox("持有天數", [5, 10, 20, 30], index=1)
+
+            backtest_results = []
+            for _, row in df_log.iterrows():
+                ticker = row['ticker']
+                entry_date = row['date']
+                entry_price = row['price']
+                # 抓取該日期後的價格
+                try:
+                    df_bt = fetch_ohlcv(ticker, period="3mo")  # 快取可能已有
+                    if df_bt is not None and len(df_bt) > hold_days:
+                        # 找到進場日期後的價格
+                        future_dates = df_bt.index[df_bt.index >= entry_date]
+                        if len(future_dates) > hold_days:
+                            exit_price = df_bt.loc[future_dates[hold_days], 'close']
+                            ret = (exit_price - entry_price) / entry_price * 100
+                            backtest_results.append({
+                                "ticker": ticker,
+                                "進場日": entry_date.strftime("%Y-%m-%d"),
+                                "進場價": entry_price,
+                                "出場價": round(exit_price, 2),
+                                "回報%": round(ret, 2)
+                            })
+                except Exception as e:
+                    continue
+
+            if backtest_results:
+                df_bt = pd.DataFrame(backtest_results)
+                st.dataframe(df_bt, use_container_width=True, hide_index=True)
+
+                win_rate = (df_bt["回報%"] > 0).mean() * 100
+                avg_return = df_bt["回報%"].mean()
+                st.metric("信號勝率", f"{win_rate:.1f}%")
+                st.metric("平均回報", f"{avg_return:.2f}%")
+
+                # 繪製累積回報曲線
+                df_bt["累積回報"] = (1 + df_bt["回報%"]/100).cumprod() - 1
+                fig_bt = go.Figure(go.Scatter(
+                    x=df_bt.index, y=df_bt["累積回報"]*100,
+                    mode='lines+markers', name='累積回報',
+                    line=dict(color=C_GREEN, width=2)
+                ))
+                fig_bt.update_layout(title=f"信號累積回報 (持有{hold_days}天)", height=400,
+                    paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"))
+                st.plotly_chart(fig_bt, use_container_width=True)
+            else:
+                st.info("尚無足夠數據進行回測，請等待更多信號。")
         else:
-            st.info("尚無信號記錄，當掃描時總分≥70的股票會自動出現在此。")
+            st.info("尚無信號記錄。")
     except FileNotFoundError:
         st.info("信號記錄檔案不存在，將在第一次掃描時建立。")
+
+# ═══════════ TAB 7: 風險管理 ═══════════════════════════════
+with tab7:
+    st.subheader("⚖️ 風險管理與部位計算")
+    st.markdown("輸入你的帳戶規模，選擇要計算的股票，系統會根據止損距離自動建議買入股數。")
+
+    account_size = st.number_input("帳戶總值 (USD)", min_value=1000.0, value=100000.0, step=1000.0)
+    risk_pct = st.slider("每筆風險 (%)", 0.5, 5.0, 2.0) / 100
+
+    # 讓用戶選擇股票
+    ticker_input = st.text_input("輸入股票代碼", "AAPL").upper()
+    if st.button("計算部位"):
+        df = fetch_ohlcv(ticker_input, period="2y")
+        if df is not None:
+            close_v = float(df["close"].iloc[-1])
+            # 使用斐波那契支撐作為建議止損
+            hi52 = get_52w_high(df)
+            lo52 = float(df["low"].rolling(252).min().iloc[-1]) if len(df) >= 252 else float(df["low"].min())
+            fibs = fib_levels(lo52, hi52)
+            # 找一個接近的支撐位作為止損
+            support_level = None
+            for ratio, price in sorted(fibs.items(), key=lambda x: float(x[0].replace("%", ""))):
+                if price < close_v:
+                    support_level = price
+                    break
+            if support_level is None:
+                support_level = close_v * 0.92  # 預設 -8%
+
+            shares, risk_amount = calculate_position(close_v, support_level, account_size, risk_pct)
+            st.markdown(f"**{ticker_input}** 現價：{close_v:.2f}")
+            st.markdown(f"建議止損：{support_level:.2f} (斐波那契支撐)")
+            st.markdown(f"每筆風險金額：${risk_amount:.2f}")
+            st.markdown(f"建議買入股數：**{shares}** 股")
+            st.caption("以上計算僅供參考，請自行調整止損位。")
+        else:
+            st.error("找不到數據。")
 
 st.divider()
 st.caption("⚠️ 本系統僅供技術分析參考，不構成投資建議。數據來自富途 API 及 Yahoo Finance，可能存在延遲。")
