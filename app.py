@@ -385,7 +385,7 @@ with tab1:
     with g_col2: st.plotly_chart(make_gauge(vix_score, "🇭🇰 港股撈底機會"), use_container_width=True)
     with g_col3: st.plotly_chart(make_gauge(vix_score, "🌍 綜合評分"), use_container_width=True)
 
-# ═══════════ TAB 2: 個股掃描（含指標說明、中線輔助因子）══════════
+# ═══════════ TAB 2: 個股掃描（含總表說明、指標解釋）══════════
 with tab2:
     if market=="🇭🇰 港股":   tickers = HK_WATCHLIST
     elif market=="🇺🇸 美股": tickers = US_WATCHLIST
@@ -665,9 +665,40 @@ with tab2:
 
     st.divider()
     st.subheader("📋 全部股票列表")
+
+    # ─────── 指標說明（可折疊）───────
+    with st.expander("📖 指標說明（點擊展開）"):
+        st.markdown("""
+        | 指標 | 說明 | 如何判斷 |
+        |------|------|----------|
+        | **量比** | 今日成交量 ÷ 過去20日均量 | >1.5 放量，>2.0 爆量，<0.7 縮量 |
+        | **CMF** | 資金流向（-1 ~ 1） | >0.1 資金流入，< -0.1 資金流出（派發） |
+        | **VWAP** | 成交量加權平均價（當日公平價） | 股價 > VWAP 強勢，< VWAP 弱勢 |
+        | **Z-score** | 成交量異常程度（標準差倍數） | >2.0 極度放量，< -1.5 極度縮量 |
+        | **共振** | RSI、KDJ、CCI、W%R 中幾個同時超賣 | ≥3 強共振，2 中共振，1 弱共振 |
+        | **短線分** | 綜合超賣、量能、資金流的短期評分 | >70 強烈撈底，>50 值得關注 |
+        | **中線分** | 綜合中線超賣、輔助因子的中期評分 | >50 中期底部機會，>30 可追蹤 |
+        """)
+
+    # ─────── 總表（新增 CMF、VWAP、Z-score、共振）───────
     if rows:
-        table_df = pd.DataFrame([{k:v for k,v in r.items() if not k.startswith("_")} for r in rows])
-        st.dataframe(table_df.sort_values("短線分",ascending=False), use_container_width=True, hide_index=True)
+        table_data = []
+        for r in rows:
+            table_data.append({
+                "代碼": r["代碼"],
+                "現價": r["現價"],
+                "漲跌%": r["1日漲跌%"],
+                "量比": r["量比"],
+                "CMF": r["cmf"],
+                "VWAP": r["vwap"],
+                "Z-score": r["vol_z"],
+                "共振": r["resonance"],
+                "短線分": r["短線分"],
+                "中線分": r["中線分"],
+                "信號": r["信號"],
+            })
+        table_df = pd.DataFrame(table_data)
+        st.dataframe(table_df.sort_values("短線分", ascending=False), use_container_width=True, hide_index=True)
 
 # ═══════════ TAB 3: 回撤計算（維持不變）══════════════
 with tab3:
@@ -694,7 +725,7 @@ with tab3:
                 st.dataframe(pd.DataFrame(rows_f),use_container_width=True,hide_index=True)
         else: st.error("找不到數據，港股請用 0700.HK 格式。")
 
-# ═══════════ TAB 4: 技術圖表 ═══════════════════════════════
+# ═══════════ TAB 4: 技術圖表（維持不變）══════════════
 with tab4:
     st.subheader("📈 個股技術分析圖表")
     tk_chart = st.text_input("輸入股票代碼","AAPL",key="chart_tk").upper()
@@ -753,7 +784,7 @@ with tab4:
         elif rsi_w_now>60 and rsi_now<35: st.markdown(f"<div style='background:#1c1a00;border:1px solid #9e6a03;border-radius:8px;padding:12px;margin-top:8px'><b style='color:{C_ORANGE}'>⚠️ 注意：周線RSI仍強</b><br>建議等周線RSI回落至50以下再操作。</div>", unsafe_allow_html=True)
     else: st.warning("找不到足夠數據。")
 
-# ═══════════ TAB 5: 四維撈底評分（含中線輔助因子）══════════
+# ═══════════ TAB 5: 四維撈底評分（維持先前已修正版本）══════════
 with tab5:
     st.subheader("🎯 四維撈底評分模型（附 PE 百分位 & 資金流向）")
     st.caption("技術超賣 40% + 估值低位 30% + 股價回調 15% + 資金訊號 15%（動態調整）")
@@ -770,65 +801,6 @@ with tab5:
             custom_input_5 = st.text_area("每行一個代碼","AAPL\nNVDA\n0700.HK",height=100,key="tab5_custom")
             scan_manual = st.button("掃描手動清單")
     scan_list = auto_tickers if scan_auto else ([x.strip().upper() for x in custom_input_5.split("\n") if x.strip()] if scan_manual else None)
-
-    # 中線輔助因子計算（供 Tab5 使用）
-    def calc_mid_extra(df, pe=None):
-        """回傳 (extra_score, detail_dict) 額外中線加分，最高可加 30 分"""
-        extra = 0
-        detail = {}
-        if df is None or len(df)<60: return 0, detail
-
-        close = df["close"]
-        current_price = float(close.iloc[-1])
-
-        # 1. 估值支撐
-        if pe is not None and pe > 0:
-            if pe < 10:
-                extra += 15
-                detail["PE極低"] = 15
-            elif pe < 15:
-                extra += 10
-                detail["PE偏低"] = 10
-
-        # 2. 波動率收縮
-        tr = pd.DataFrame({
-            'hl': df['high'] - df['low'],
-            'h_pc': abs(df['high'] - close.shift()),
-            'l_pc': abs(df['low'] - close.shift())
-        }).max(axis=1)
-        atr20 = tr.rolling(20).mean().iloc[-1]
-        atr60 = tr.rolling(60).mean().iloc[-1]
-        if pd.notna(atr20) and pd.notna(atr60) and atr60 > 0 and (atr20 / atr60) < 0.8:
-            extra += 5
-            detail["波動率收縮"] = 5
-
-        # 3. 距 52 週低點位置
-        lo52 = df["low"].rolling(252).min().iloc[-1] if len(df)>=252 else df["low"].min()
-        pct_above_lo52 = (current_price - lo52) / lo52 * 100 if lo52 > 0 else 100
-        if pct_above_lo52 < 20:
-            extra += 10 if pct_above_lo52 < 10 else 5
-            detail["接近52週低點"] = 10 if pct_above_lo52 < 10 else 5
-
-        # 4. 月線 RSI
-        rsi20 = calc_rsi(close, 20).iloc[-1]
-        if rsi20 < 35:
-            extra += 10
-            detail["月RSI超賣"] = 10
-        elif rsi20 < 40:
-            extra += 5
-            detail["月RSI偏低"] = 5
-
-        # 5. 股息率（若有）
-        try:
-            stock = yf.Ticker(ticker)
-            div_yield = stock.info.get("dividendYield", 0) or 0
-            if div_yield > 0.03:
-                extra += 5
-                detail["高股息"] = 5
-        except:
-            pass
-
-        return extra, detail
 
     def technical_detail_score(df):
         if df is None or len(df)<60: return 0, {}
@@ -879,7 +851,6 @@ with tab5:
         if df is None or len(df)<60: return None
         name, pe, pb = get_stock_info(ticker)
 
-        # 使用改良後的 score_stock 取得短線分與中線分（已含中線輔助因子）
         short_s, mid_s, sigs, _, _, _, _, _ = score_stock(df)
 
         tech_total, tech_detail = technical_detail_score(df)
@@ -890,7 +861,6 @@ with tab5:
             elif "CCI" in k: cci_score = v[0]
             elif "W%R" in k: wr_score = v[0]
 
-        # 估值（含 PE 百分位）
         val_score = 50; val_detail = "無數據(預設50分)"
         pe_percentile = None
         if pe is not None and pe > 0:
