@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-25T13:03:20.679213+00:00",
+  "updated": "2026-07-25T14:55:38.241535+00:00",
   "data": {
     "0700.HK": {
       "close": 434.6,
@@ -227,13 +227,13 @@
       "from_high_pct": -25.0
     },
     "TSLA": {
-      "close": 313.03,
-      "chg1d": -2.08,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 498.83,
       "lo52": 297.82,
-      "rsi": 28.0,
-      "vol_ratio": 1.41,
-      "from_high_pct": -37.2
+      "rsi": 29.1,
+      "vol_ratio": 1.4,
+      "from_high_pct": NaN
     },
     "ORCL": {
       "close": 114.99,
@@ -245,13 +245,13 @@
       "from_high_pct": -66.4
     },
     "ASML": {
-      "close": 1757.09,
-      "chg1d": -2.55,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 1999.96,
       "lo52": 679.886,
-      "rsi": 48.2,
+      "rsi": 52.1,
       "vol_ratio": 0.65,
-      "from_high_pct": -12.1
+      "from_high_pct": NaN
     },
     "UBER": {
       "close": 65.94,
