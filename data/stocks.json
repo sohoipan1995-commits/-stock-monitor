@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-26T20:46:29.220115+00:00",
+  "updated": "2026-07-26T22:51:55.642982+00:00",
   "data": {
     "0700.HK": {
       "close": 434.6,
@@ -218,13 +218,13 @@
       "from_high_pct": -21.7
     },
     "META": {
-      "close": NaN,
-      "chg1d": NaN,
+      "close": 595.19,
+      "chg1d": -1.8,
       "hi52": 793.649,
       "lo52": 519.778,
-      "rsi": 46.3,
+      "rsi": 43.8,
       "vol_ratio": 0.59,
-      "from_high_pct": NaN
+      "from_high_pct": -25.0
     },
     "TSLA": {
       "close": 313.03,
@@ -254,13 +254,13 @@
       "from_high_pct": -12.1
     },
     "UBER": {
-      "close": NaN,
-      "chg1d": NaN,
+      "close": 65.94,
+      "chg1d": -4.31,
       "hi52": 101.99,
-      "lo52": 67.19,
-      "rsi": 39.2,
-      "vol_ratio": 1.44,
-      "from_high_pct": NaN
+      "lo52": 65.56,
+      "rsi": 33.2,
+      "vol_ratio": 1.45,
+      "from_high_pct": -35.3
     },
     "NEE": {
       "close": 89.78,
