@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-26T14:56:41.717120+00:00",
+  "updated": "2026-07-26T16:49:27.439226+00:00",
   "data": {
     "0700.HK": {
       "close": 434.6,
@@ -245,13 +245,13 @@
       "from_high_pct": -66.4
     },
     "ASML": {
-      "close": 1757.09,
-      "chg1d": -2.55,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 1999.96,
       "lo52": 679.886,
-      "rsi": 48.2,
+      "rsi": 52.1,
       "vol_ratio": 0.65,
-      "from_high_pct": -12.1
+      "from_high_pct": NaN
     },
     "UBER": {
       "close": 65.94,
