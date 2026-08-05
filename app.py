@@ -445,10 +445,10 @@ with st.sidebar:
 # 獲取市場狀態
 market_state, market_ret, market_vol = classify_market_state()
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🌍 市場氣氛", "📊 個股掃描", "📐 回撤計算",
     "📈 技術圖表", "🎯 四維撈底評分", "📋 信號追蹤與績效",
-    "⚖️ 風險管理", "🔄 週期投影 (MCPE)"
+    "⚖️ 風險管理", "🔄 週期投影 (MCPE)", "🧪 實驗性分頁 (Pro Beta)"
 ])
 # ═══════════ TAB 1: 市場氣氛 ═══════════════════════════════
 with tab1:
@@ -1407,6 +1407,171 @@ with tab8:
                         st.warning("⚠️ **時間窗預警**：當前波段運行時間已接近歷史平均值，近期發生轉折（變盤）的機率顯著增加。")
                 else:
                     st.info("數據過少或未形成足夠的波段，嘗試調降「轉折靈敏度」！")
+        else:
+            st.error("無法載入數據，請確認代碼是否正確。")
+# ═══════════ TAB 9: 實驗性分頁 (Pro Beta) ═══════════════════════════════
+with tab9:
+    st.subheader("🧪 進階實驗室 (Pro Beta) - 動態 MCPE 引擎")
+    st.markdown("測試新一代算法：引入 **ATR 動態轉折濾網** 與 **江恩時間窗 (Gann Cycles)**，並預留 AI 研判與衍生品期權防守點評估空間。")
+    
+    beta_c1, beta_c2, beta_c3 = st.columns([1, 1, 2])
+    with beta_c1:
+        beta_tk = st.text_input("輸入股票代碼 (Beta)", "MSTR", key="beta_tk").upper()
+    with beta_c2:
+        atr_mult = st.number_input("ATR 敏感度乘數", value=1.5, min_value=0.5, max_value=5.0, step=0.1, 
+                                   help="預設為 1.5 倍 ATR。數值越大，過濾的雜訊越多，只抓大波段。")
+    with beta_c3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        beta_run = st.button("🔬 執行高階週期運算", type="primary", use_container_width=True)
+
+    if beta_run or beta_tk:
+        df_beta = fetch_ohlcv(beta_tk, period="1y")
+        if df_beta is not None and len(df_beta) > 60:
+            
+            # ── 1. 高階算法：ATR 動態波動率計算 ──
+            def calc_atr(df, period=14):
+                high_low = df['high'] - df['low']
+                high_close = np.abs(df['high'] - df['close'].shift())
+                low_close = np.abs(df['low'] - df['close'].shift())
+                ranges = pd.concat([high_low, high_close, low_close], axis=1)
+                true_range = np.max(ranges, axis=1)
+                return true_range.rolling(period).mean()
+
+            df_beta['ATR'] = calc_atr(df_beta, 14)
+            current_close = df_beta['close'].iloc[-1]
+            current_atr = df_beta['ATR'].iloc[-1]
+            
+            # 將 ATR 轉換為百分比濾網
+            dynamic_dev_pct = (current_atr * atr_mult / current_close)
+            
+            st.info(f"💡 **動態濾網啟動**：{beta_tk} 當前 14 日 ATR 為 {current_atr:.2f}。系統已將轉折閾值自動設定為 **{dynamic_dev_pct*100:.2f}%**。")
+
+            # ── 2. 高階算法：動態 ZigZag 波段擷取 ──
+            def calculate_dynamic_zigzag(df, dev_pct):
+                pivots = [] 
+                trend = 1 
+                high_t, high_p = df.index[0], df['high'].iloc[0]
+                low_t, low_p = df.index[0], df['low'].iloc[0]
+                
+                for i in range(1, len(df)):
+                    idx = df.index[i]
+                    high, low = df['high'].iloc[i], df['low'].iloc[i]
+                    
+                    if trend == 1: 
+                        if high > high_p:
+                            high_p, high_t = high, idx
+                        elif low < high_p * (1 - dev_pct):
+                            pivots.append((high_t, high_p, 1))
+                            trend = -1
+                            low_p, low_t = low, idx
+                    else: 
+                        if low < low_p:
+                            low_p, low_t = low, idx
+                        elif high > low_p * (1 + dev_pct):
+                            pivots.append((low_t, low_p, -1))
+                            trend = 1
+                            high_p, high_t = high, idx
+                
+                if trend == 1: pivots.append((high_t, high_p, 1))
+                else: pivots.append((low_t, low_p, -1))
+                
+                pdf = pd.DataFrame(pivots, columns=['date', 'price', 'type'])
+                pdf['days'] = pdf['date'].diff().dt.days
+                pdf['pct_chg'] = pdf['price'].pct_change() * 100
+                return pdf
+
+            pivots_df = calculate_dynamic_zigzag(df_beta, dynamic_dev_pct)
+            
+            # ── 3. 圖表渲染 ──
+            chart_col, data_col = st.columns([7, 3])
+            
+            with chart_col:
+                fig_beta = go.Figure()
+                fig_beta.add_trace(go.Candlestick(
+                    x=df_beta.index, open=df_beta["open"], high=df_beta["high"],
+                    low=df_beta["low"], close=df_beta["close"], name="K線",
+                    increasing_line_color=C_GREEN, decreasing_line_color=C_RED
+                ))
+                
+                fig_beta.add_trace(go.Scatter(
+                    x=pivots_df['date'], y=pivots_df['price'], mode="lines+markers",
+                    line=dict(color=C_PURPLE, width=2, dash="solid"),
+                    marker=dict(size=6, color="#e6edf3"), name="動態週期波段"
+                ))
+                
+                for i in range(1, len(pivots_df)):
+                    prev_date = pivots_df['date'].iloc[i-1]
+                    prev_price = pivots_df['price'].iloc[i-1]
+                    curr_date = pivots_df['date'].iloc[i]
+                    curr_price = pivots_df['price'].iloc[i]
+                    days_chg = pivots_df['days'].iloc[i]
+                    pct_chg = pivots_df['pct_chg'].iloc[i]
+                    
+                    mid_date = prev_date + (curr_date - prev_date) / 2
+                    color = C_GREEN if pct_chg > 0 else C_RED
+                    text_str = f"{days_chg:.0f}日<br>{pct_chg:+.2f}%"
+                    
+                    fig_beta.add_annotation(
+                        x=mid_date, y=prev_price + (curr_price - prev_price)/2,
+                        text=text_str, showarrow=False,
+                        font=dict(color=color, size=11),
+                        bgcolor="rgba(13, 17, 23, 0.7)", bordercolor=color, borderwidth=1, borderpad=2
+                    )
+
+                fig_beta.update_layout(
+                    height=600, paper_bgcolor=C_BG, plot_bgcolor=C_BG, 
+                    font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    yaxis=dict(gridcolor="#21262d"), xaxis=dict(gridcolor="#21262d")
+                )
+                st.plotly_chart(fig_beta, use_container_width=True)
+
+            with data_col:
+                if len(pivots_df) >= 3:
+                    current_leg_type = pivots_df['type'].iloc[-1]
+                    current_days = pivots_df['days'].iloc[-1]
+                    
+                    st.markdown("""
+                    <div style="background-color:#161b22; padding:15px; border-radius:10px; border:1px solid #30363d;">
+                        <h4 style="color:#bc8cff; margin-top:0;">🧬 動態週期與籌碼分析</h4>
+                        <hr style="border-color:#30363d; margin: 10px 0;">
+                    """, unsafe_allow_html=True)
+                    
+                    def beta_row(title, val, color="#e6edf3", bold=False):
+                        fw = "bold" if bold else "normal"
+                        st.markdown(f"""
+                        <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:14px;">
+                            <span style="color:#8b949e;">{title}</span>
+                            <span style="color:{color}; font-weight:{fw};">{val}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # 江恩時間窗 (Gann Cycles) 檢測
+                    gann_numbers = [7, 21, 49, 90, 144]
+                    nearest_gann = min(gann_numbers, key=lambda x: abs(x - current_days))
+                    gann_diff = abs(nearest_gann - current_days)
+                    
+                    gann_status = f"接近 {nearest_gann} 日變盤窗" if gann_diff <= 2 else f"距 {nearest_gann} 日窗還有 {gann_diff} 日"
+                    gann_color = C_ORANGE if gann_diff <= 2 else C_GREY
+                    
+                    state_text = "上漲波段" if current_leg_type == 1 else "下跌波段"
+                    state_color = C_GREEN if current_leg_type == 1 else C_RED
+                    
+                    beta_row("當前結構狀態", state_text, state_color, True)
+                    beta_row("當前運行天數", f"{current_days:.0f} 日")
+                    beta_row("江恩時間法則", gann_status, gann_color, True)
+                    
+                    st.markdown("<hr style='border-color:#30363d; margin: 10px 0;'>", unsafe_allow_html=True)
+                    st.markdown("**🤖 AI 宏觀與衍生品研判 (預留接口)**")
+                    st.caption("未來可在此串接 Perplexity API，自動生成該標的最新宏觀催化劑，或抓取期權 Max Pain 與隱含波動率 (IV) 輔助 Sell Puts/Buy Puts 決策。")
+                    st.button("呼叫 Perplexity 研判 (建置中)", disabled=True)
+                    
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    
+                    if gann_diff <= 2:
+                        st.warning("⚠️ **江恩時間共振警告**：當前波段已進入關鍵幾何時間窗，請密切注意 K 線反轉訊號，適合評估期權合約的觸發點！")
+                else:
+                    st.info("數據過少，請嘗試調降「ATR 敏感度乘數」。")
         else:
             st.error("無法載入數據，請確認代碼是否正確。")
 st.divider()
