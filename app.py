@@ -445,10 +445,10 @@ with st.sidebar:
 # 獲取市場狀態
 market_state, market_ret, market_vol = classify_market_state()
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, , tab8 = st.tabs([
     "🌍 市場氣氛", "📊 個股掃描", "📐 回撤計算",
     "📈 技術圖表", "🎯 四維撈底評分", "📋 信號追蹤與績效",
-    "⚖️ 風險管理"
+    "⚖️ 風險管理", "🔄 週期投影 (MCPE)"
 ])
 
 # ═══════════ TAB 1: 市場氣氛 ═══════════════════════════════
@@ -1241,6 +1241,174 @@ with tab7:
             st.caption("以上計算僅供參考，請自行調整止損位。")
         else:
             st.error("找不到數據。")
+# ═══════════ TAB 8: 週期投影引擎 (MCPE) ═══════════════════════════════
+with tab8:
+    st.subheader("🔄 市場週期投影引擎 (MCPE)")
+    st.markdown("利用幾何波段算法尋找轉折點，推算週期時間對稱性與空間共振目標。")
+    
+    # ── UI 控制列 ──
+    mcpe_c1, mcpe_c2, mcpe_c3 = st.columns([1, 1, 2])
+    with mcpe_c1:
+        mcpe_tk = st.text_input("輸入股票代碼 (MCPE)", "0700.HK", key="mcpe_tk").upper()
+    with mcpe_c2:
+        mcpe_dev = st.number_input("轉折靈敏度 (幅度%)", value=5.0, min_value=1.0, max_value=20.0, step=0.5, 
+                                   help="波段回撤多少百分比才確認為新的高/低點。數值越大過濾越多雜訊。")
+    with mcpe_c3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        mcpe_run = st.button("🚀 執行週期投影運算", type="primary", use_container_width=True)
 
+    if mcpe_run or mcpe_tk:
+        df_mcpe = fetch_ohlcv(mcpe_tk, period="1y")
+        if df_mcpe is not None and len(df_mcpe) > 30:
+            
+            # ── 1. 核心算法：ZigZag 波段擷取 ──
+            def calculate_zigzag(df, deviation_pct):
+                dev = deviation_pct / 100.0
+                pivots = [] # 儲存格式: (日期, 價格, 型態 1=高 -1=低)
+                
+                trend = 1 # 初始假設向上
+                high_t, high_p = df.index[0], df['high'].iloc[0]
+                low_t, low_p = df.index[0], df['low'].iloc[0]
+                
+                for i in range(1, len(df)):
+                    idx = df.index[i]
+                    high, low = df['high'].iloc[i], df['low'].iloc[i]
+                    
+                    if trend == 1: # 尋找頂部
+                        if high > high_p:
+                            high_p, high_t = high, idx
+                        elif low < high_p * (1 - dev):
+                            pivots.append((high_t, high_p, 1))
+                            trend = -1
+                            low_p, low_t = low, idx
+                    else: # 尋找底部
+                        if low < low_p:
+                            low_p, low_t = low, idx
+                        elif high > low_p * (1 + dev):
+                            pivots.append((low_t, low_p, -1))
+                            trend = 1
+                            high_p, high_t = high, idx
+                
+                # 加入最後一筆未完成的節點
+                if trend == 1: pivots.append((high_t, high_p, 1))
+                else: pivots.append((low_t, low_p, -1))
+                
+                # 將資料轉換為 DataFrame 以利計算
+                pdf = pd.DataFrame(pivots, columns=['date', 'price', 'type'])
+                pdf['days'] = pdf['date'].diff().dt.days
+                pdf['pct_chg'] = pdf['price'].pct_change() * 100
+                return pdf
+
+            # 執行計算
+            pivots_df = calculate_zigzag(df_mcpe, mcpe_dev)
+            
+            # ── 2. 排版：左側圖表 / 右側儀表板 ──
+            chart_col, data_col = st.columns([7, 3])
+            
+            with chart_col:
+                fig_mcpe = go.Figure()
+                # 繪製 K 線
+                fig_mcpe.add_trace(go.Candlestick(
+                    x=df_mcpe.index, open=df_mcpe["open"], high=df_mcpe["high"],
+                    low=df_mcpe["low"], close=df_mcpe["close"], name="K線",
+                    increasing_line_color=C_GREEN, decreasing_line_color=C_RED
+                ))
+                
+                # 繪製 ZigZag 藍白折線
+                line_color = C_BLUE
+                fig_mcpe.add_trace(go.Scatter(
+                    x=pivots_df['date'], y=pivots_df['price'], mode="lines+markers",
+                    line=dict(color=line_color, width=2, dash="solid"),
+                    marker=dict(size=6, color="#e6edf3"), name="週期波段"
+                ))
+                
+                # 在波段中間加上「天數與幅度」標籤
+                for i in range(1, len(pivots_df)):
+                    prev_date = pivots_df['date'].iloc[i-1]
+                    prev_price = pivots_df['price'].iloc[i-1]
+                    curr_date = pivots_df['date'].iloc[i]
+                    curr_price = pivots_df['price'].iloc[i]
+                    days_chg = pivots_df['days'].iloc[i]
+                    pct_chg = pivots_df['pct_chg'].iloc[i]
+                    
+                    mid_date = prev_date + (curr_date - prev_date) / 2
+                    color = C_GREEN if pct_chg > 0 else C_RED
+                    text_str = f"{days_chg:.0f}日<br>{pct_chg:+.2f}%"
+                    
+                    fig_mcpe.add_annotation(
+                        x=mid_date, y=prev_price + (curr_price - prev_price)/2,
+                        text=text_str, showarrow=False,
+                        font=dict(color=color, size=11),
+                        bgcolor="rgba(13, 17, 23, 0.7)", bordercolor=color, borderwidth=1, borderpad=2
+                    )
+
+                fig_mcpe.update_layout(
+                    height=600, paper_bgcolor=C_BG, plot_bgcolor=C_BG, 
+                    font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    yaxis=dict(gridcolor="#21262d"), xaxis=dict(gridcolor="#21262d")
+                )
+                st.plotly_chart(fig_mcpe, use_container_width=True)
+
+            with data_col:
+                # ── 3. 計算 MCPE 儀表板參數 ──
+                if len(pivots_df) >= 3:
+                    current_leg_type = pivots_df['type'].iloc[-1]
+                    current_days = pivots_df['days'].iloc[-1]
+                    current_pct = pivots_df['pct_chg'].iloc[-1]
+                    
+                    # 取過去歷史相同方向波段的平均天數
+                    same_dir_legs = pivots_df[pivots_df['type'] == current_leg_type].iloc[:-1]
+                    avg_days = same_dir_legs['days'].mean() if not same_dir_legs.empty else current_days
+                    
+                    # 計算週期完成度
+                    cycle_completion = min((current_days / avg_days) * 100, 100) if avg_days > 0 else 0
+                    
+                    # 波動狀態分析
+                    prev_opp_leg_pct = abs(pivots_df['pct_chg'].iloc[-2])
+                    curr_pct_abs = abs(current_pct)
+                    vol_diff = curr_pct_abs - prev_opp_leg_pct
+                    vol_state = f"波幅收縮 ({vol_diff:+.1f}%)" if vol_diff < 0 else f"波幅擴張 ({vol_diff:+.1f}%)"
+                    
+                    # 預估下個目標區間 (0.618 Fib)
+                    last_major_high = pivots_df[pivots_df['type'] == 1]['price'].iloc[-1] if current_leg_type == 1 else pivots_df[pivots_df['type'] == 1]['price'].iloc[-2]
+                    last_major_low = pivots_df[pivots_df['type'] == -1]['price'].iloc[-1] if current_leg_type == -1 else pivots_df[pivots_df['type'] == -1]['price'].iloc[-2]
+                    fib_618 = last_major_low + (last_major_high - last_major_low) * 0.618
+                    
+                    st.markdown("""
+                    <div style="background-color:#161b22; padding:15px; border-radius:10px; border:1px solid #30363d;">
+                        <h4 style="color:#58a6ff; margin-top:0;">📊 市場週期投影引擎 (MCPE)</h4>
+                        <hr style="border-color:#30363d; margin: 10px 0;">
+                    """, unsafe_allow_html=True)
+                    
+                    # 繪製表格
+                    def mcpe_row(title, val, color="#e6edf3", bold=False):
+                        fw = "bold" if bold else "normal"
+                        st.markdown(f"""
+                        <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:14px;">
+                            <span style="color:#8b949e;">{title}</span>
+                            <span style="color:{color}; font-weight:{fw};">{val}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    state_text = "上漲波段" if current_leg_type == 1 else "下跌波段"
+                    state_color = C_GREEN if current_leg_type == 1 else C_RED
+                    
+                    mcpe_row("市場結構狀態", state_text, state_color, True)
+                    mcpe_row("當前運行天數", f"{current_days:.0f} 日")
+                    mcpe_row("波段平均週期", f"{avg_days:.0f} 日")
+                    mcpe_row("週期完成程度", f"{cycle_completion:.1f}%", C_ORANGE)
+                    mcpe_row("波動狀態分析", vol_state, C_GREEN if "收縮" in vol_state else C_RED)
+                    st.markdown("<hr style='border-color:#30363d; margin: 10px 0;'>", unsafe_allow_html=True)
+                    mcpe_row("共振整合目標 (61.8%)", f"{fib_618:.2f}", C_BLUE, True)
+                    
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    
+                    if cycle_completion > 80:
+                        st.warning("⚠️ **時間窗預警**：當前波段運行時間已接近歷史平均值，近期發生轉折（變盤）的機率顯著增加。")
+                else:
+                    st.info("數據過少或未形成足夠的波段，嘗試調降「轉折靈敏度」！")
+        else:
+            st.error("無法載入數據，請確認代碼是否正確。")
 st.divider()
 st.caption("⚠️ 本系統僅供技術分析參考，不構成投資建議。數據來自富途 API 及 Yahoo Finance，可能存在延遲。")
