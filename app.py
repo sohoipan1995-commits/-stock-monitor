@@ -445,12 +445,11 @@ with st.sidebar:
 # 獲取市場狀態
 market_state, market_ret, market_vol = classify_market_state()
 
-tab1, tab2, tab3, tab4, tab5, tab6, , tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🌍 市場氣氛", "📊 個股掃描", "📐 回撤計算",
     "📈 技術圖表", "🎯 四維撈底評分", "📋 信號追蹤與績效",
     "⚖️ 風險管理", "🔄 週期投影 (MCPE)"
 ])
-
 # ═══════════ TAB 1: 市場氣氛 ═══════════════════════════════
 with tab1:
     st.subheader("🌍 宏觀市場氣氛儀表板")
