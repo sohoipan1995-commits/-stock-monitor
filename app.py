@@ -1246,18 +1246,23 @@ with tab8:
     st.markdown("利用幾何波段算法尋找轉折點，推算週期時間對稱性與空間共振目標。")
     
     # ── UI 控制列 ──
-    mcpe_c1, mcpe_c2, mcpe_c3 = st.columns([1, 1, 2])
+# ── UI 控制列 (加入週期選擇) ──
+    mcpe_c1, mcpe_c2, mcpe_c3, mcpe_c4 = st.columns([1.2, 1, 1.2, 1.5])
     with mcpe_c1:
         mcpe_tk = st.text_input("輸入股票代碼 (MCPE)", "0700.HK", key="mcpe_tk").upper()
     with mcpe_c2:
-        mcpe_dev = st.number_input("轉折靈敏度 (幅度%)", value=5.0, min_value=1.0, max_value=20.0, step=0.5, 
-                                   help="波段回撤多少百分比才確認為新的高/低點。數值越大過濾越多雜訊。")
+        # 新增下拉選單，預設選擇 "2y" (index=1)
+        mcpe_period = st.selectbox("分析週期", ["1y", "2y", "3y", "5y"], index=1, key="mcpe_period")
     with mcpe_c3:
+        mcpe_dev = st.number_input("轉折靈敏度 (幅度%)", value=5.0, min_value=1.0, max_value=20.0, step=0.5, 
+                                   help="波段回撤多少百分比才確認為新的高/低點。")
+    with mcpe_c4:
         st.markdown("<br>", unsafe_allow_html=True)
         mcpe_run = st.button("🚀 執行週期投影運算", type="primary", use_container_width=True)
 
     if mcpe_run or mcpe_tk:
-        df_mcpe = fetch_ohlcv(mcpe_tk, period="1y")
+        # 這裡將原本寫死的 "1y" 換成變數 mcpe_period
+        df_mcpe = fetch_ohlcv(mcpe_tk, period=mcpe_period)
         if df_mcpe is not None and len(df_mcpe) > 30:
             
             # ── 1. 核心算法：ZigZag 波段擷取 ──
