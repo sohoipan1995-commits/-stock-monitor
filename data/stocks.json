@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-13T21:42:19.616563+00:00",
+  "updated": "2026-08-13T22:31:51.031323+00:00",
   "data": {
     "0700.HK": {
       "close": 441.0,
@@ -11,13 +11,13 @@
       "from_high_pct": -34.7
     },
     "0005.HK": {
-      "close": 163.0,
-      "chg1d": 1.05,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 169.595,
       "lo52": 91.316,
-      "rsi": 59.3,
+      "rsi": 55.6,
       "vol_ratio": 0.54,
-      "from_high_pct": -3.9
+      "from_high_pct": NaN
     },
     "0939.HK": {
       "close": 8.825,
@@ -47,22 +47,22 @@
       "from_high_pct": -5.3
     },
     "0388.HK": {
-      "close": 408.2,
-      "chg1d": 0.39,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 452.998,
       "lo52": 360.0,
-      "rsi": 56.5,
+      "rsi": 55.1,
       "vol_ratio": 0.77,
-      "from_high_pct": -9.9
+      "from_high_pct": NaN
     },
     "0066.HK": {
-      "close": 32.32,
-      "chg1d": 0.06,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 36.841,
       "lo52": 25.364,
-      "rsi": 50.2,
+      "rsi": 49.9,
       "vol_ratio": 0.62,
-      "from_high_pct": -12.3
+      "from_high_pct": NaN
     },
     "0003.HK": {
       "close": 6.775,
@@ -83,13 +83,13 @@
       "from_high_pct": 0.0
     },
     "0016.HK": {
-      "close": 117.6,
-      "chg1d": 0.0,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 147.9,
       "lo52": 85.747,
       "rsi": 44.5,
       "vol_ratio": 0.57,
-      "from_high_pct": -20.5
+      "from_high_pct": NaN
     },
     "0883.HK": {
       "close": 23.86,
@@ -119,22 +119,22 @@
       "from_high_pct": -19.9
     },
     "0001.HK": {
-      "close": 72.3,
-      "chg1d": 1.47,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 74.4,
       "lo52": 48.165,
-      "rsi": 53.7,
-      "vol_ratio": 1.02,
-      "from_high_pct": -2.8
+      "rsi": 49.0,
+      "vol_ratio": 0.98,
+      "from_high_pct": NaN
     },
     "9988.HK": {
-      "close": 121.9,
-      "chg1d": -0.57,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 185.991,
       "lo52": 88.65,
-      "rsi": 56.4,
+      "rsi": 57.6,
       "vol_ratio": 0.62,
-      "from_high_pct": -34.5
+      "from_high_pct": NaN
     },
     "0175.HK": {
       "close": 17.91,
@@ -146,13 +146,13 @@
       "from_high_pct": -28.2
     },
     "0027.HK": {
-      "close": 34.94,
-      "chg1d": 2.16,
+      "close": NaN,
+      "chg1d": NaN,
       "hi52": 43.132,
       "lo52": 28.68,
-      "rsi": 66.3,
+      "rsi": 62.3,
       "vol_ratio": 1.51,
-      "from_high_pct": -19.0
+      "from_high_pct": NaN
     },
     "2628.HK": {
       "close": 27.6,
