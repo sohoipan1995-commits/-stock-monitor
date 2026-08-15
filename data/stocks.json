@@ -1,14 +1,14 @@
 {
-  "updated": "2026-08-14T22:13:27.313219+00:00",
+  "updated": "2026-08-15T00:41:59.065591+00:00",
   "data": {
     "0700.HK": {
-      "close": NaN,
-      "chg1d": NaN,
+      "close": 440.0,
+      "chg1d": -0.23,
       "hi52": 675.134,
       "lo52": 411.0,
-      "rsi": 40.7,
+      "rsi": 40.4,
       "vol_ratio": 1.05,
-      "from_high_pct": NaN
+      "from_high_pct": -34.8
     },
     "0005.HK": {
       "close": 160.8,
@@ -29,13 +29,13 @@
       "from_high_pct": -6.6
     },
     "1398.HK": {
-      "close": NaN,
-      "chg1d": NaN,
+      "close": 7.165,
+      "chg1d": -0.62,
       "hi52": 7.66,
       "lo52": 5.273,
-      "rsi": 53.8,
+      "rsi": 51.5,
       "vol_ratio": 0.53,
-      "from_high_pct": NaN
+      "from_high_pct": -6.5
     },
     "3988.HK": {
       "close": 5.25,
@@ -92,13 +92,13 @@
       "from_high_pct": -21.2
     },
     "0883.HK": {
-      "close": NaN,
-      "chg1d": NaN,
+      "close": 23.82,
+      "chg1d": -0.17,
       "hi52": 30.313,
       "lo52": 17.409,
-      "rsi": 54.7,
+      "rsi": 54.3,
       "vol_ratio": 0.42,
-      "from_high_pct": NaN
+      "from_high_pct": -21.4
     },
     "2318.HK": {
       "close": 54.6,
