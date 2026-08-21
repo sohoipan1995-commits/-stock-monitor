@@ -32,10 +32,12 @@ except ImportError:
 st.set_page_config(page_title="📈 撈底監察系統 Pro+", page_icon="📈", layout="wide")
 
 # ── 自动刷新逻辑 ──
+# 【修正】快取TTL與刷新倒數對齊，避免「刷新了但看到同一小時舊數據」
+AUTO_REFRESH_SEC = 1800
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = time.time()
 elapsed = time.time() - st.session_state.last_refresh
-remaining = max(0, 1800 - int(elapsed))
+remaining = max(0, AUTO_REFRESH_SEC - int(elapsed))
 mins, secs = divmod(remaining, 60)
 with st.sidebar:
     st.markdown(f"🔄 自動刷新：**{mins:02d}:{secs:02d}**")
@@ -43,7 +45,7 @@ if st.button("🔄 立即刷新"):
     st.session_state.last_refresh = time.time()
     st.cache_data.clear()
     st.rerun()
-if elapsed >= 1800:
+if elapsed >= AUTO_REFRESH_SEC:
     st.session_state.last_refresh = time.time()
     st.cache_data.clear()
     st.rerun()
@@ -64,9 +66,6 @@ st.markdown("""
   .resonance-strong{color:#3fb950;font-weight:bold;}
   .resonance-medium{color:#d29922;font-weight:bold;}
   .resonance-weak{color:#8b949e;font-weight:bold;}
-  .value-cheap{background:#0d2818;color:#3fb950;border:1px solid #3fb950;border-radius:8px;padding:2px 8px;font-size:0.8em;}
-  .value-fair{background:#1c2c1a;color:#d29922;border:1px solid #d29922;border-radius:8px;padding:2px 8px;font-size:0.8em;}
-  .value-expensive{background:#2c1a1a;color:#f85149;border:1px solid #f85149;border-radius:8px;padding:2px 8px;font-size:0.8em;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,19 +76,13 @@ US_WATCHLIST = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","ORCL",
 MACRO_TICKERS = {"VIX":"^VIX","VVIX":"^VVIX","SPX":"^GSPC","HSI":"^HSI","DXY":"DX-Y.NYB","US10Y":"^TNX","VHSI":"^VHSI","HYG":"HYG","USDHKD":"USDHKD=X"}
 FIB_LEVELS=[0.236,0.382,0.500,0.618,0.786]; DROP_LEVELS=[0.10,0.20,0.25,0.30,0.35,0.40]
 
-# 簡單產業分組（供同業相對估值比較用，可自行擴充）
-SECTOR_MAP = {
+# 手動產業備援表（當 yfinance 抓不到 sector/industry 時使用）
+SECTOR_MAP_FALLBACK = {
     "0005.HK":"HK_BANK","0011.HK":"HK_BANK","0939.HK":"HK_BANK","1398.HK":"HK_BANK","3988.HK":"HK_BANK","2388.HK":"HK_BANK",
     "0002.HK":"HK_UTIL","0003.HK":"HK_UTIL","0006.HK":"HK_UTIL",
     "0016.HK":"HK_PROPERTY","0688.HK":"HK_PROPERTY","0012.HK":"HK_PROPERTY","0001.HK":"HK_PROPERTY","0083.HK":"HK_PROPERTY",
     "0700.HK":"HK_TECH","9988.HK":"HK_TECH","3690.HK":"HK_TECH","9618.HK":"HK_TECH","9999.HK":"HK_TECH","1810.HK":"HK_TECH",
-    "AAPL":"US_TECH","MSFT":"US_TECH","NVDA":"US_TECH","GOOGL":"US_TECH","META":"US_TECH","AMD":"US_TECH","AVGO":"US_TECH","ORCL":"US_TECH","ASML":"US_TECH","QCOM":"US_TECH","INTC":"US_TECH","AMAT":"US_TECH","LRCX":"US_TECH","MU":"US_TECH",
-    "JPM":"US_BANK","BAC":"US_BANK","GS":"US_BANK","MS":"US_BANK",
-    "COST":"US_RETAIL","WMT":"US_RETAIL","HD":"US_RETAIL",
-    "JNJ":"US_HEALTH","UNH":"US_HEALTH","PFE":"US_HEALTH",
-    "XOM":"US_ENERGY","NEE":"US_ENERGY",
 }
-def get_sector(ticker): return SECTOR_MAP.get(ticker, "OTHER")
 
 # 富途连线
 @st.cache_resource
@@ -130,116 +123,118 @@ def fetch_multiple(tickers, period="2y"):
         for future in as_completed(futures): results[futures[future]] = future.result()
     return results
 
-@st.cache_data(ttl=600)
-def get_stock_info(ticker):
-    """回傳 (名稱, PE, PB, 股息率, ROE, 負債比, 營收增速)"""
-    name, pe, pb = ticker, None, None
-    div_yield, roe, de_ratio, rev_growth = None, None, None, None
+# ══════════════════ 【修正】合併所有 yfinance .info 呼叫，避免同一隻股票重複請求3次 ══════════════════
+@st.cache_data(ttl=1800)
+def get_full_stock_info(ticker):
+    """一次性抓取所有需要的基本面欄位，供 get_stock_info / PE / PB 百分位 / 品質過濾器共用"""
+    result = {
+        "name": ticker, "pe": None, "pb": None, "div_yield": None, "roe": None,
+        "de_ratio": None, "rev_growth": None, "eps": None, "book_value": None,
+        "sector": None, "industry": None, "hist_5y": None
+    }
     if quote_ctx:
         try:
             ret, data = quote_ctx.get_market_snapshot([to_futu(ticker)])
             if ret == RET_OK and not data.empty:
                 row = data.iloc[0]
-                pe = row.get('pe_ratio'); pb = row.get('pb_ratio'); name = row.get('stock_name', ticker)
-                if pd.isna(pe): pe = None
+                pe = row.get('pe_ratio'); pb = row.get('pb_ratio')
+                result["name"] = row.get('stock_name', ticker)
+                if not pd.isna(pe): result["pe"] = pe
+                if not pd.isna(pb): result["pb"] = pb
         except: pass
     try:
-        stock = yf.Ticker(ticker); info = stock.info
-        if name == ticker: name = info.get("shortName") or info.get("longName") or ticker
-        if pe is None:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        if result["name"] == ticker: result["name"] = info.get("shortName") or info.get("longName") or ticker
+        if result["pe"] is None:
             pe = info.get("trailingPE") or info.get("forwardPE")
             if pe is None:
                 eps = info.get("trailingEps"); price = info.get("currentPrice")
-                if eps and price and eps>0: pe = price/eps
-        if pb is None: pb = info.get("priceToBook")
-        div_yield = info.get("dividendYield")
-        roe = info.get("returnOnEquity")
-        de_ratio = info.get("debtToEquity")
-        rev_growth = info.get("revenueGrowth")
+                if eps and price and eps > 0: pe = price / eps
+            result["pe"] = pe
+        if result["pb"] is None: result["pb"] = info.get("priceToBook")
+        result["div_yield"] = info.get("dividendYield")
+        result["roe"] = info.get("returnOnEquity")
+        result["de_ratio"] = info.get("debtToEquity")
+        result["rev_growth"] = info.get("revenueGrowth")
+        result["eps"] = info.get("trailingEps")
+        result["book_value"] = info.get("bookValue")
+        result["sector"] = info.get("sector")
+        result["industry"] = info.get("industry")
+        hist = stock.history(period="5y")
+        if not hist.empty: result["hist_5y"] = hist["Close"]
     except: pass
-    return name, pe, pb, div_yield, roe, de_ratio, rev_growth
+    return result
 
-# ══════════════════ 【新增】估值歷史百分位引擎 ══════════════════
-@st.cache_data(ttl=86400)
-def get_pe_percentile(ticker, years=5):
-    """用歷史股價 ÷ 目前EPS 重建近似歷史PE序列，回傳(pe序列, 百分位, 目前PE)"""
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        eps = info.get("trailingEps")
-        if not eps or eps <= 0: return None, None, None
-        hist = stock.history(period=f"{years}y")
-        if hist.empty: return None, None, None
-        pe_series = hist["Close"] / eps
-        pe_series = pe_series.dropna()
-        if len(pe_series) < 30: return None, None, None
-        current_pe = float(pe_series.iloc[-1])
-        percentile = float((pe_series < current_pe).mean())
-        return pe_series, percentile, current_pe
-    except:
-        return None, None, None
+def get_stock_info(ticker):
+    """向下相容舊介面：回傳 (名稱, PE, PB, 股息率, ROE, 負債比, 營收增速)"""
+    info = get_full_stock_info(ticker)
+    return info["name"], info["pe"], info["pb"], info["div_yield"], info["roe"], info["de_ratio"], info["rev_growth"]
 
-@st.cache_data(ttl=86400)
-def get_pb_percentile(ticker, years=5):
-    """用歷史股價 ÷ 目前每股淨值 重建近似歷史PB序列，回傳(pb序列, 百分位, 目前PB)"""
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        book_value = info.get("bookValue")
-        if not book_value or book_value <= 0: return None, None, None
-        hist = stock.history(period=f"{years}y")
-        if hist.empty: return None, None, None
-        pb_series = hist["Close"] / book_value
-        pb_series = pb_series.dropna()
-        if len(pb_series) < 30: return None, None, None
-        current_pb = float(pb_series.iloc[-1])
-        percentile = float((pb_series < current_pb).mean())
-        return pb_series, percentile, current_pb
-    except:
-        return None, None, None
+def get_sector(ticker):
+    """優先用 yfinance 動態抓到的 sector，抓不到才用手動備援表"""
+    info = get_full_stock_info(ticker)
+    if info.get("sector"): return info["sector"]
+    return SECTOR_MAP_FALLBACK.get(ticker, "OTHER")
+
+def get_pe_percentile(ticker):
+    """用共用的 hist_5y 重建近似歷史PE，回傳(百分位, 目前PE)。注意：用目前EPS回推，成長股會失真"""
+    info = get_full_stock_info(ticker)
+    eps = info.get("eps"); hist = info.get("hist_5y")
+    if not eps or eps <= 0 or hist is None or hist.empty: return None, None
+    pe_series = (hist / eps).dropna()
+    if len(pe_series) < 30: return None, None
+    current_pe = float(pe_series.iloc[-1])
+    percentile = float((pe_series < current_pe).mean())
+    return percentile, current_pe
+
+def get_pb_percentile(ticker):
+    """用共用的 hist_5y 重建近似歷史PB，回傳(百分位, 目前PB)"""
+    info = get_full_stock_info(ticker)
+    bv = info.get("book_value"); hist = info.get("hist_5y")
+    if not bv or bv <= 0 or hist is None or hist.empty: return None, None
+    pb_series = (hist / bv).dropna()
+    if len(pb_series) < 30: return None, None
+    current_pb = float(pb_series.iloc[-1])
+    percentile = float((pb_series < current_pb).mean())
+    return percentile, current_pb
 
 def get_futu_capital_flow(ticker):
     """若富途已連線，嘗試抓主力資金流向；否則安全回傳 None（不會讓程式崩潰）"""
     if not quote_ctx: return None
     try:
         ret, data = quote_ctx.get_capital_flow(to_futu(ticker))
-        if ret == RET_OK and not data.empty:
-            return data
+        if ret == RET_OK and not data.empty: return data
         return None
     except:
         return None
 
-def sector_relative_valuation(ticker, pe, pb, watchlist):
-    """把個股 PE/PB 與同產業觀察名單中位數比較，回傳相對位置描述"""
+def sector_relative_valuation(ticker, pe, sector_pe_cache):
+    """把個股 PE 與同產業觀察名單中位數比較（sector_pe_cache 為預先批量算好的 {sector: [pe,...]}）"""
     sector = get_sector(ticker)
     if sector == "OTHER": return None
-    peers = [t for t in watchlist if get_sector(t) == sector and t != ticker]
-    if not peers: return None
-    peer_pes = []
-    for p in peers[:8]:  # 限制數量避免過度請求
-        try:
-            _, p_pe, _, _, _, _, _ = get_stock_info(p)
-            if p_pe and p_pe > 0: peer_pes.append(p_pe)
-        except: continue
+    peer_pes = [p for p in sector_pe_cache.get(sector, []) if p is not None and p > 0]
     if not peer_pes or pe is None: return None
     median_pe = float(np.median(peer_pes))
     if median_pe <= 0: return None
     rel = (pe - median_pe) / median_pe * 100
     return {"sector":sector, "median_pe":round(median_pe,1), "rel_pct":round(rel,1), "n_peers":len(peer_pes)}
 
-def quality_filter(name, pe, pb, div_yield, roe, de_ratio, rev_growth):
-    """基本面品質過濾器，避免抓到「便宜陷阱」"""
+def quality_filter(roe, de_ratio, rev_growth):
+    """基本面品質過濾器，回傳 (旗標列表, 分數懲罰係數 0~1)"""
     flags = []
-    if roe is not None and roe < 0.05: flags.append("⚠️ ROE過低(<5%)")
-    if de_ratio is not None and de_ratio > 150: flags.append("⚠️ 負債比過高(>150%)")
-    if rev_growth is not None and rev_growth < -0.10: flags.append("⚠️ 營收衰退(<-10%)")
+    penalty = 1.0
+    if roe is not None and roe < 0.05: flags.append("⚠️ ROE過低(<5%)"); penalty -= 0.15
+    if de_ratio is not None and de_ratio > 150: flags.append("⚠️ 負債比過高(>150%)"); penalty -= 0.15
+    if rev_growth is not None and rev_growth < -0.10: flags.append("⚠️ 營收衰退(<-10%)"); penalty -= 0.10
     if not flags: flags.append("✅ 品質過關")
-    return flags
+    return flags, max(penalty, 0.5)
 
-def valuation_badge(val_score):
-    if val_score >= 70: return "<span class='value-cheap'>💰 便宜</span>"
-    elif val_score >= 40: return "<span class='value-fair'>😐 合理</span>"
-    else: return "<span class='value-expensive'>🔥 偏貴</span>"
+def valuation_label(val_score):
+    """【修正】改用純文字，st.dataframe 不解析HTML，這樣才能正確顯示"""
+    if val_score >= 70: return "💰 便宜"
+    elif val_score >= 40: return "😐 合理"
+    else: return "🔥 偏貴"
 
 # ── 技术指标 ──
 def calc_rsi(series, period=14):
@@ -450,7 +445,6 @@ def classify_market_state():
         return "unknown", 0, 0
 
 def get_dynamic_weights(vix_val):
-    # 【改良】提高估值權重，讓系統更聚焦於「便宜/低估」而非純技術超賣
     if vix_val>=30: return {"tech":0.40,"val":0.35,"dd":0.10,"fund":0.15}
     elif vix_val>=25: return {"tech":0.35,"val":0.35,"dd":0.15,"fund":0.15}
     elif vix_val<=15: return {"tech":0.20,"val":0.50,"dd":0.15,"fund":0.15}
@@ -458,8 +452,11 @@ def get_dynamic_weights(vix_val):
 
 SIGNAL_LOG_FILE = "signal_log.csv"
 def log_signal(ticker, total_score, label, price, date):
+    """【修正】同一天同一隻股票不重複記錄，避免回測統計失真"""
     try: df_log = pd.read_csv(SIGNAL_LOG_FILE)
     except: df_log = pd.DataFrame(columns=["date","ticker","total_score","label","price"])
+    dup = ((df_log["date"] == date) & (df_log["ticker"] == ticker)).any() if not df_log.empty else False
+    if dup: return
     df_log = pd.concat([df_log, pd.DataFrame([{"date":date,"ticker":ticker,"total_score":total_score,"label":label,"price":price}])], ignore_index=True)
     df_log.to_csv(SIGNAL_LOG_FILE, index=False)
 
@@ -514,10 +511,10 @@ with st.sidebar:
     - 周RSI < 35
     - 200日均線乖離 < -20%
     - OBV底背離吸籌
-    **【新增】估值分（0-100）**
-    - PE / PB 歷史5年百分位
-    - 同產業相對估值比較
-    - 品質過濾器（ROE / 負債比 / 營收增速）
+    **估值分（0-100）**
+    - PE / PB 歷史5年百分位（用目前EPS/淨值回推，成長股僅供參考）
+    - 同產業相對估值比較（動態抓取yfinance sector）
+    - 品質過濾器（ROE / 負債比 / 營收增速，**會實際打折總分**）
     """)
 
 market_state, market_ret, market_vol = classify_market_state()
@@ -923,10 +920,10 @@ with tab4:
             st.markdown(f"<div style='background:#1c1a00;border:1px solid #9e6a03;border-radius:8px;padding:12px;margin-top:8px'><b style='color:{C_ORANGE}'>⚠️ 注意：周線RSI仍強</b><br>建議等周線RSI回落至50以下再操作。</div>", unsafe_allow_html=True)
     else: st.warning("找不到足夠數據。")
 
-# ═══════════ TAB 5: 四維撈底評分（【改良】含真實PE/PB歷史百分位、同業比較、品質過濾）══════════
+# ═══════════ TAB 5: 四維撈底評分（【修正】平行化 + 合併API呼叫 + 品質懲罰 + 動態產業）══════════
 with tab5:
-    st.subheader("🎯 四維撈底評分模型（真實 PE/PB 百分位 + 同業比較 + 品質過濾）")
-    st.caption("技術超賣 + 估值低位 + 股價回調 + 資金訊號（動態權重，估值權重已提升）")
+    st.subheader("🎯 四維撈底評分模型（真實 PE/PB 百分位 + 同業比較 + 品質懲罰）")
+    st.caption("技術超賣 + 估值低位 + 股價回調 + 資金訊號（動態權重）。品質過濾器現在會實際打折總分，避免「便宜陷阱」被誤判為高信心。")
 
     if market == "🇭🇰 港股": auto_tickers = HK_WATCHLIST
     elif market == "🇺🇸 美股": auto_tickers = US_WATCHLIST
@@ -985,10 +982,12 @@ with tab5:
         total = sum(v[0] for v in detail.values())
         return min(total,100), detail
 
-    def four_dimension_score(ticker, watchlist):
+    def four_dimension_score(ticker, sector_pe_cache):
         df = fetch_ohlcv(ticker, period="2y")
         if df is None or len(df)<60: return None
-        name, pe, pb, div_yield, roe, de_ratio, rev_growth = get_stock_info(ticker)
+        info = get_full_stock_info(ticker)
+        name, pe, pb = info["name"], info["pe"], info["pb"]
+        div_yield, roe, de_ratio, rev_growth = info["div_yield"], info["roe"], info["de_ratio"], info["rev_growth"]
 
         short_s, mid_s, sigs, _, _, _, _, _ = score_stock(df, market_state)
         tech_total, tech_detail = technical_detail_score(df)
@@ -999,13 +998,12 @@ with tab5:
             elif "CCI" in k: cci_score = v[0]
             elif "W%R" in k: wr_score = v[0]
 
-        # ══ 【核心改良】真實 PE/PB 歷史百分位估值評分 ══
         val_score = 50; val_detail = "無數據(預設50分)"
         pe_percentile = None; pb_percentile = None
         pe_val_score = None; pb_val_score = None
 
         if pe is not None and pe > 0:
-            _, pe_perc, _ = get_pe_percentile(ticker)
+            pe_perc, _ = get_pe_percentile(ticker)
             if pe_perc is not None:
                 pe_percentile = pe_perc
                 if pe_perc < 0.1: pe_val_score = 90
@@ -1019,7 +1017,7 @@ with tab5:
                 else: pe_val_score = 10
 
         if pb is not None and pb > 0:
-            _, pb_perc, _ = get_pb_percentile(ticker)
+            pb_perc, _ = get_pb_percentile(ticker)
             if pb_perc is not None:
                 pb_percentile = pb_perc
                 if pb_perc < 0.1: pb_val_score = 90
@@ -1033,9 +1031,8 @@ with tab5:
                 else: pb_val_score = 10
 
         sector = get_sector(ticker)
-        is_financial = sector in ("HK_BANK","US_BANK")
+        is_financial = "bank" in sector.lower() or "financ" in sector.lower() or sector == "HK_BANK"
         if pe_val_score is not None and pb_val_score is not None:
-            # 銀行/金融股更看重PB，其他股票PE PB各半
             val_score = round(pb_val_score*0.6 + pe_val_score*0.4, 1) if is_financial else round(pe_val_score*0.6 + pb_val_score*0.4, 1)
             val_detail = f"PE {pe:.1f}" + (f"(百分位{pe_percentile*100:.0f}%)" if pe_percentile is not None else "") + \
                          f" ｜ PB {pb:.2f}" + (f"(百分位{pb_percentile*100:.0f}%)" if pb_percentile is not None else "")
@@ -1046,14 +1043,14 @@ with tab5:
             val_score = pb_val_score
             val_detail = f"PB {pb:.2f}" + (f"，歷史百分位 {pb_percentile*100:.0f}%" if pb_percentile is not None else "")
 
-        # 同產業相對估值
-        sector_info = sector_relative_valuation(ticker, pe, pb, watchlist)
+        sector_info = sector_relative_valuation(ticker, pe, sector_pe_cache)
         sector_detail = ""
         if sector_info:
             sector_detail = f"同業{sector_info['sector']}中位PE {sector_info['median_pe']}，相對偏差 {sector_info['rel_pct']:+.1f}%（{sector_info['n_peers']}家對比）"
 
-        # 品質過濾器
-        q_flags = quality_filter(name, pe, pb, div_yield, roe, de_ratio, rev_growth)
+        # 【修正】品質過濾器現在會實際打折 val_score
+        q_flags, q_penalty = quality_filter(roe, de_ratio, rev_growth)
+        val_score = round(val_score * q_penalty, 1)
 
         hi52 = get_52w_high(df)
         current_price = float(df["close"].iloc[-1])
@@ -1094,7 +1091,7 @@ with tab5:
             "cci_score":cci_score,"wr_score":wr_score,
             "val_score":val_score,"val_detail":val_detail,
             "pe_percentile":pe_percentile,"pb_percentile":pb_percentile,
-            "sector_detail":sector_detail,"quality_flags":"｜".join(q_flags),
+            "sector_detail":sector_detail,"quality_flags":"｜".join(q_flags),"quality_penalty":q_penalty,
             "drawdown":drawdown,"dd_score":dd_score,
             "fund_total":fund_total,"downvol_score":downvol_score,
             "mfi_score":mfi_score,"mfi_trend_score":mfi_trend_score,
@@ -1103,19 +1100,39 @@ with tab5:
         }
 
     if scan_list:
+        # 【修正】先平行批量抓好所有股票的基本面資訊，建立同業PE快取表，避免掃描時重複請求
+        with st.spinner(f"步驟1/2：批量抓取基本面數據..."):
+            sector_pe_cache = {}
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                info_futures = {executor.submit(get_full_stock_info, tk): tk for tk in scan_list}
+                for future in as_completed(info_futures):
+                    tk = info_futures[future]
+                    try:
+                        info = future.result()
+                        sec = get_sector(tk)
+                        sector_pe_cache.setdefault(sec, []).append(info.get("pe"))
+                    except: continue
+
+        # 【修正】平行計算四維評分，大幅加速掃描
         results = []
-        with st.spinner(f"正在掃描 {len(scan_list)} 隻股票（含 PE/PB 歷史百分位 + 同業比較計算，數量多時較慢）..."):
-            for tk in scan_list:
-                res = four_dimension_score(tk, scan_list)
-                if res: results.append(res)
+        with st.spinner(f"步驟2/2：計算 {len(scan_list)} 隻股票的四維評分..."):
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                score_futures = {executor.submit(four_dimension_score, tk, sector_pe_cache): tk for tk in scan_list}
+                for future in as_completed(score_futures):
+                    try:
+                        res = future.result()
+                        if res: results.append(res)
+                    except: continue
+
         if results:
             results.sort(key=lambda x: x["total_score"], reverse=True)
+            today_str = datetime.now().strftime("%Y-%m-%d")
             for r in results:
                 if r["total_score"] >= 70:
-                    log_signal(r["ticker"], r["total_score"], r["confidence"], r["price"], datetime.now().strftime("%Y-%m-%d"))
+                    log_signal(r["ticker"], r["total_score"], r["confidence"], r["price"], today_str)
 
             st.markdown("---")
-            st.markdown("### 📋 四維評分詳細細項表（真實估值百分位 + 同業比較 + 品質過濾）")
+            st.markdown("### 📋 四維評分詳細細項表（真實估值百分位 + 同業比較 + 品質懲罰）")
             w_disp = results[0]["weights"]
             st.caption(f"目前 VIX = {results[0]['vix']:.1f}，權重：技術 {w_disp['tech']:.0%} / 估值 {w_disp['val']:.0%} / 回調 {w_disp['dd']:.0%} / 資金 {w_disp['fund']:.0%}")
 
@@ -1124,15 +1141,14 @@ with tab5:
                 detailed_data.append({
                     "代碼":r["ticker"],"名稱":r["name"],"現價":r["price"],
                     "總分":r["total_score"],"信心":r["confidence"],
-                    "估值標籤":valuation_badge(r["val_score"]),
+                    "估值標籤":valuation_label(r["val_score"]),
                     "技術總分":r["tech_total"],"估值得分":r["val_score"],"估值細節":r["val_detail"],
                     "同業比較":r["sector_detail"] if r["sector_detail"] else "無同業數據",
-                    "品質檢查":r["quality_flags"],
+                    "品質檢查":r["quality_flags"],"品質懲罰係數":r["quality_penalty"],
                     "回撤%":round(r["drawdown"],1),"回撤得分":r["dd_score"],
                     "資金總分":r["fund_total"],"富途資金":r["capital_detail"]
                 })
             df_detailed = pd.DataFrame(detailed_data)
-            st.write(df_detailed.drop(columns=["估值標籤"]).to_html(escape=False, index=False), unsafe_allow_html=True) if False else None
             st.dataframe(df_detailed, use_container_width=True, hide_index=True)
             csv = df_detailed.to_csv(index=False).encode('utf-8')
             st.download_button("⬇️ 下載詳細評分 CSV", data=csv,
@@ -1162,12 +1178,12 @@ with tab5:
     else:
         st.info("👆 點擊「掃描當前觀察名單」即自動分析已選市場的所有股票。")
     st.divider()
-    st.caption("估值百分位基於 Yahoo Finance 歷史股價 ÷ 目前EPS/每股淨值 重建近似序列，僅供參考，非真實歷史PE/PB。")
+    st.caption("估值百分位基於 Yahoo Finance 歷史股價 ÷ 目前EPS/每股淨值 重建近似序列，對盈利穩定公司較準確，成長股僅供參考。")
 
 # ═══════════ TAB 6: 信號追蹤與回測績效 ═══════════════════════════════
 with tab6:
     st.subheader("📋 信號追蹤與績效回測")
-    st.markdown("每當「四維撈底評分」總分 ≥ 70 時，系統會自動記錄信號，並在此追蹤後續績效。")
+    st.markdown("每當「四維撈底評分」總分 ≥ 70 時，系統會自動記錄信號（每日每股僅記錄一次），並在此追蹤後續績效。")
     try:
         df_log = pd.read_csv(SIGNAL_LOG_FILE)
         if not df_log.empty:
@@ -1180,11 +1196,14 @@ with tab6:
             hold_days = st.selectbox("持有天數", [5, 10, 20, 30], index=1)
             backtest_results = []
             for _, row in df_log.iterrows():
-                ticker = row['ticker']; entry_date = row['date']; entry_price = row['price']
+                ticker = row['ticker']; entry_date = row['date'].normalize(); entry_price = row['price']
                 try:
                     df_bt = fetch_ohlcv(ticker, period="3mo")
                     if df_bt is not None and len(df_bt) > hold_days:
-                        future_dates = df_bt.index[df_bt.index >= entry_date]
+                        # 【修正】統一用 .normalize() 比對日期，避免時區/時間部分造成錯位
+                        bt_index_norm = df_bt.index.normalize()
+                        future_mask = bt_index_norm >= entry_date
+                        future_dates = df_bt.index[future_mask]
                         if len(future_dates) > hold_days:
                             exit_price = df_bt.loc[future_dates[hold_days], 'close']
                             ret = (exit_price - entry_price) / entry_price * 100
