@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-25T20:18:35.695895+00:00",
+  "updated": "2026-08-25T21:26:01.700876+00:00",
   "data": {
     "0700.HK": {
       "close": NaN,
@@ -187,7 +187,7 @@
       "hi52": 549.201,
       "lo52": 348.544,
       "rsi": 66.2,
-      "vol_ratio": 0.53,
+      "vol_ratio": 0.54,
       "from_high_pct": -10.5
     },
     "NVDA": {
@@ -196,7 +196,7 @@
       "hi52": 236.265,
       "lo52": 163.852,
       "rsi": 49.6,
-      "vol_ratio": 1.03,
+      "vol_ratio": 1.05,
       "from_high_pct": -9.8
     },
     "AMZN": {
@@ -205,7 +205,7 @@
       "hi52": 287.2,
       "lo52": 196.0,
       "rsi": 51.6,
-      "vol_ratio": 0.54,
+      "vol_ratio": 0.55,
       "from_high_pct": -9.1
     },
     "GOOGL": {
@@ -214,7 +214,7 @@
       "hi52": 408.366,
       "lo52": 204.696,
       "rsi": 48.7,
-      "vol_ratio": 0.78,
+      "vol_ratio": 0.79,
       "from_high_pct": -15.0
     },
     "META": {
@@ -232,16 +232,16 @@
       "hi52": 498.83,
       "lo52": 297.38,
       "rsi": 51.9,
-      "vol_ratio": 0.86,
+      "vol_ratio": 0.87,
       "from_high_pct": -29.8
     },
     "ORCL": {
-      "close": 144.71,
-      "chg1d": 1.59,
+      "close": 144.76,
+      "chg1d": 1.62,
       "hi52": 341.824,
       "lo52": 114.5,
-      "rsi": 51.1,
-      "vol_ratio": 0.48,
+      "rsi": 51.2,
+      "vol_ratio": 0.49,
       "from_high_pct": -57.7
     },
     "ASML": {
@@ -259,7 +259,7 @@
       "hi52": 101.99,
       "lo52": 65.41,
       "rsi": 65.0,
-      "vol_ratio": 0.73,
+      "vol_ratio": 0.74,
       "from_high_pct": -21.2
     },
     "NEE": {
@@ -277,7 +277,7 @@
       "hi52": 1085.68,
       "lo52": 119.25,
       "rsi": 53.7,
-      "vol_ratio": 0.61,
+      "vol_ratio": 0.62,
       "from_high_pct": -18.4
     },
     "CLX": {
@@ -313,7 +313,7 @@
       "hi52": 779.37,
       "lo52": 627.663,
       "rsi": 54.3,
-      "vol_ratio": 0.59,
+      "vol_ratio": 0.6,
       "from_high_pct": -1.7
     },
     "QQQ": {
@@ -322,7 +322,7 @@
       "hi52": 747.828,
       "lo52": 554.99,
       "rsi": 49.0,
-      "vol_ratio": 0.61,
+      "vol_ratio": 0.62,
       "from_high_pct": -5.0
     },
     "SOXL": {
@@ -331,7 +331,7 @@
       "hi52": 302.0,
       "lo52": 23.793,
       "rsi": 41.2,
-      "vol_ratio": 0.67,
+      "vol_ratio": 0.68,
       "from_high_pct": -61.7
     },
     "AMD": {
