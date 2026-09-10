@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-10T20:15:06.827478+00:00",
+  "updated": "2026-09-10T22:56:39.447511+00:00",
   "data": {
     "0700.HK": {
       "close": 425.6,
@@ -178,7 +178,7 @@
       "hi52": 344.273,
       "lo52": 225.118,
       "rsi": 59.0,
-      "vol_ratio": 1.61,
+      "vol_ratio": 1.66,
       "from_high_pct": -5.1
     },
     "MSFT": {
@@ -187,7 +187,7 @@
       "hi52": 549.201,
       "lo52": 348.544,
       "rsi": 55.2,
-      "vol_ratio": 0.68,
+      "vol_ratio": 0.75,
       "from_high_pct": -10.3
     },
     "NVDA": {
@@ -196,7 +196,7 @@
       "hi52": 236.265,
       "lo52": 164.079,
       "rsi": 49.8,
-      "vol_ratio": 0.77,
+      "vol_ratio": 0.79,
       "from_high_pct": -7.6
     },
     "AMZN": {
@@ -205,7 +205,7 @@
       "hi52": 287.2,
       "lo52": 196.0,
       "rsi": 43.6,
-      "vol_ratio": 0.76,
+      "vol_ratio": 0.79,
       "from_high_pct": -12.3
     },
     "GOOGL": {
@@ -214,7 +214,7 @@
       "hi52": 408.104,
       "lo52": 235.228,
       "rsi": 41.4,
-      "vol_ratio": 0.95,
+      "vol_ratio": 1.01,
       "from_high_pct": -18.5
     },
     "META": {
@@ -223,7 +223,7 @@
       "hi52": 788.217,
       "lo52": 519.778,
       "rsi": 66.4,
-      "vol_ratio": 1.09,
+      "vol_ratio": 1.16,
       "from_high_pct": -18.2
     },
     "TSLA": {
@@ -232,17 +232,17 @@
       "hi52": 498.83,
       "lo52": 297.38,
       "rsi": 53.7,
-      "vol_ratio": 0.71,
+      "vol_ratio": 0.74,
       "from_high_pct": -27.1
     },
     "ORCL": {
-      "close": 153.17,
-      "chg1d": -5.23,
+      "close": 152.94,
+      "chg1d": -5.38,
       "hi52": 341.824,
       "lo52": 114.5,
-      "rsi": 53.7,
-      "vol_ratio": 1.65,
-      "from_high_pct": -55.2
+      "rsi": 53.5,
+      "vol_ratio": 2.15,
+      "from_high_pct": -55.3
     },
     "ASML": {
       "close": 1687.43,
@@ -250,25 +250,25 @@
       "hi52": 1997.377,
       "lo52": 785.844,
       "rsi": 45.4,
-      "vol_ratio": 0.93,
+      "vol_ratio": 0.95,
       "from_high_pct": -15.5
     },
     "UBER": {
-      "close": 72.54,
-      "chg1d": 2.05,
+      "close": 72.56,
+      "chg1d": 2.08,
       "hi52": 101.99,
       "lo52": 65.41,
-      "rsi": 43.3,
-      "vol_ratio": 2.01,
+      "rsi": 43.4,
+      "vol_ratio": 2.16,
       "from_high_pct": -28.9
     },
     "NEE": {
-      "close": 82.46,
-      "chg1d": -0.23,
+      "close": 82.44,
+      "chg1d": -0.25,
       "hi52": 97.3,
       "lo52": 67.432,
-      "rsi": 38.8,
-      "vol_ratio": 0.87,
+      "rsi": 38.7,
+      "vol_ratio": 1.22,
       "from_high_pct": -15.3
     },
     "LITE": {
@@ -277,43 +277,43 @@
       "hi52": 1085.68,
       "lo52": 144.52,
       "rsi": 54.7,
-      "vol_ratio": 0.88,
+      "vol_ratio": 0.93,
       "from_high_pct": -13.8
     },
     "CLX": {
-      "close": 88.775,
-      "chg1d": -0.94,
+      "close": 88.77,
+      "chg1d": -0.95,
       "hi52": 125.825,
       "lo52": 83.722,
       "rsi": 24.5,
-      "vol_ratio": 0.78,
+      "vol_ratio": 0.93,
       "from_high_pct": -29.4
     },
     "JPM": {
-      "close": 353.49,
-      "chg1d": -0.34,
+      "close": 353.56,
+      "chg1d": -0.32,
       "hi52": 366.5,
       "lo52": 276.434,
-      "rsi": 48.1,
-      "vol_ratio": 0.56,
+      "rsi": 48.2,
+      "vol_ratio": 0.75,
       "from_high_pct": -3.5
     },
     "BAC": {
-      "close": 62.57,
-      "chg1d": -0.16,
+      "close": 62.56,
+      "chg1d": -0.18,
       "hi52": 64.899,
       "lo52": 45.649,
-      "rsi": 54.0,
-      "vol_ratio": 0.7,
+      "rsi": 53.9,
+      "vol_ratio": 0.89,
       "from_high_pct": -3.6
     },
     "SPY": {
-      "close": 757.89,
-      "chg1d": -0.59,
+      "close": 757.83,
+      "chg1d": -0.6,
       "hi52": 779.37,
       "lo52": 627.663,
-      "rsi": 44.2,
-      "vol_ratio": 1.09,
+      "rsi": 44.1,
+      "vol_ratio": 1.14,
       "from_high_pct": -2.8
     },
     "QQQ": {
@@ -322,7 +322,7 @@
       "hi52": 747.828,
       "lo52": 554.99,
       "rsi": 46.3,
-      "vol_ratio": 0.99,
+      "vol_ratio": 1.0,
       "from_high_pct": -5.2
     },
     "SOXL": {
