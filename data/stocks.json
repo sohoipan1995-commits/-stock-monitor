@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-24T19:37:33.631563+00:00",
+  "updated": "2026-09-24T22:50:26.474763+00:00",
   "data": {
     "0700.HK": {
       "close": 438.4,
@@ -173,174 +173,174 @@
       "from_high_pct": -21.7
     },
     "AAPL": {
-      "close": 337.35,
-      "chg1d": 0.1,
+      "close": 335.92,
+      "chg1d": -0.33,
       "hi52": 345.34,
       "lo52": 242.759,
-      "rsi": 63.2,
-      "vol_ratio": 0.39,
-      "from_high_pct": -2.3
+      "rsi": 61.4,
+      "vol_ratio": 0.57,
+      "from_high_pct": -2.7
     },
     "MSFT": {
-      "close": 497.62,
-      "chg1d": -0.59,
+      "close": 497.93,
+      "chg1d": -0.53,
       "hi52": 549.201,
       "lo52": 348.544,
-      "rsi": 54.3,
-      "vol_ratio": 0.54,
-      "from_high_pct": -9.4
+      "rsi": 54.5,
+      "vol_ratio": 0.78,
+      "from_high_pct": -9.3
     },
     "NVDA": {
-      "close": 223.61,
-      "chg1d": -0.84,
+      "close": 224.58,
+      "chg1d": -0.41,
       "hi52": 236.001,
       "lo52": 163.895,
-      "rsi": 53.8,
-      "vol_ratio": 0.41,
-      "from_high_pct": -5.3
+      "rsi": 54.8,
+      "vol_ratio": 0.6,
+      "from_high_pct": -4.8
     },
     "AMZN": {
-      "close": 249.465,
-      "chg1d": 0.08,
+      "close": 249.38,
+      "chg1d": 0.04,
       "hi52": 287.2,
       "lo52": 196.0,
-      "rsi": 44.3,
-      "vol_ratio": 0.69,
-      "from_high_pct": -13.1
+      "rsi": 44.2,
+      "vol_ratio": 0.92,
+      "from_high_pct": -13.2
     },
     "GOOGL": {
-      "close": 341.805,
-      "chg1d": 1.18,
+      "close": 342.36,
+      "chg1d": 1.34,
       "hi52": 408.104,
       "lo52": 235.228,
-      "rsi": 48.2,
-      "vol_ratio": 0.63,
-      "from_high_pct": -16.2
+      "rsi": 48.6,
+      "vol_ratio": 0.87,
+      "from_high_pct": -16.1
     },
     "META": {
-      "close": 775.638,
-      "chg1d": 4.24,
-      "hi52": 779.73,
+      "close": 777.59,
+      "chg1d": 4.5,
+      "hi52": 779.819,
       "lo52": 519.368,
-      "rsi": 80.4,
-      "vol_ratio": 1.36,
-      "from_high_pct": -0.5
+      "rsi": 80.6,
+      "vol_ratio": 1.55,
+      "from_high_pct": -0.3
     },
     "TSLA": {
-      "close": 379.56,
-      "chg1d": -0.15,
+      "close": 377.94,
+      "chg1d": -0.57,
       "hi52": 498.83,
       "lo52": 297.38,
-      "rsi": 60.2,
-      "vol_ratio": 0.57,
-      "from_high_pct": -23.9
+      "rsi": 59.1,
+      "vol_ratio": 0.67,
+      "from_high_pct": -24.2
     },
     "ORCL": {
-      "close": 139.34,
-      "chg1d": -3.61,
+      "close": 139.54,
+      "chg1d": -3.47,
       "hi52": 319.459,
       "lo52": 114.5,
-      "rsi": 42.4,
-      "vol_ratio": 1.51,
-      "from_high_pct": -56.4
+      "rsi": 42.5,
+      "vol_ratio": 1.67,
+      "from_high_pct": -56.3
     },
     "ASML": {
-      "close": 1723.62,
-      "chg1d": -1.2,
+      "close": 1722.5,
+      "chg1d": -1.27,
       "hi52": 1997.377,
       "lo52": 929.289,
-      "rsi": 52.7,
-      "vol_ratio": 0.7,
-      "from_high_pct": -13.7
+      "rsi": 52.6,
+      "vol_ratio": 0.97,
+      "from_high_pct": -13.8
     },
     "UBER": {
-      "close": 69.295,
-      "chg1d": -0.18,
+      "close": 69.22,
+      "chg1d": -0.29,
       "hi52": 101.295,
       "lo52": 65.41,
-      "rsi": 36.6,
-      "vol_ratio": 0.58,
-      "from_high_pct": -31.6
+      "rsi": 36.4,
+      "vol_ratio": 0.77,
+      "from_high_pct": -31.7
     },
     "NEE": {
-      "close": 75.87,
-      "chg1d": -1.49,
+      "close": 75.62,
+      "chg1d": -1.82,
       "hi52": 97.3,
       "lo52": 69.716,
-      "rsi": 20.5,
-      "vol_ratio": 0.98,
-      "from_high_pct": -22.0
+      "rsi": 20.0,
+      "vol_ratio": 1.32,
+      "from_high_pct": -22.3
     },
     "LITE": {
-      "close": 928.555,
-      "chg1d": -0.9,
+      "close": 929.04,
+      "chg1d": -0.85,
       "hi52": 1085.68,
       "lo52": 144.52,
-      "rsi": 53.1,
-      "vol_ratio": 0.74,
-      "from_high_pct": -14.5
+      "rsi": 53.2,
+      "vol_ratio": 0.83,
+      "from_high_pct": -14.4
     },
     "CLX": {
-      "close": 82.125,
-      "chg1d": -2.16,
+      "close": 81.8,
+      "chg1d": -2.55,
       "hi52": 125.825,
-      "lo52": 81.915,
-      "rsi": 24.7,
-      "vol_ratio": 0.61,
-      "from_high_pct": -34.7
+      "lo52": 81.73,
+      "rsi": 24.3,
+      "vol_ratio": 0.87,
+      "from_high_pct": -35.0
     },
     "JPM": {
-      "close": 337.325,
-      "chg1d": -0.06,
+      "close": 338.56,
+      "chg1d": 0.31,
       "hi52": 366.5,
       "lo52": 276.434,
-      "rsi": 33.3,
-      "vol_ratio": 0.58,
-      "from_high_pct": -8.0
+      "rsi": 35.1,
+      "vol_ratio": 0.94,
+      "from_high_pct": -7.6
     },
     "BAC": {
-      "close": 56.105,
-      "chg1d": 0.19,
+      "close": 56.03,
+      "chg1d": 0.05,
       "hi52": 64.899,
       "lo52": 45.649,
-      "rsi": 26.1,
-      "vol_ratio": 0.72,
-      "from_high_pct": -13.6
+      "rsi": 25.4,
+      "vol_ratio": 1.06,
+      "from_high_pct": -13.7
     },
     "SPY": {
-      "close": 767.59,
-      "chg1d": -0.03,
+      "close": 767.18,
+      "chg1d": -0.08,
       "hi52": 777.439,
       "lo52": 626.108,
-      "rsi": 54.1,
-      "vol_ratio": 0.63,
+      "rsi": 53.7,
+      "vol_ratio": 0.98,
       "from_high_pct": -1.3
     },
     "QQQ": {
-      "close": 741.02,
-      "chg1d": -0.03,
+      "close": 741.1,
+      "chg1d": -0.01,
       "hi52": 748.35,
       "lo52": 554.412,
-      "rsi": 63.3,
-      "vol_ratio": 0.67,
+      "rsi": 63.4,
+      "vol_ratio": 0.87,
       "from_high_pct": -1.0
     },
     "SOXL": {
-      "close": 146.03,
-      "chg1d": -0.15,
+      "close": 146.33,
+      "chg1d": 0.05,
       "hi52": 301.802,
       "lo52": 28.102,
-      "rsi": 59.5,
-      "vol_ratio": 0.99,
-      "from_high_pct": -51.6
+      "rsi": 59.7,
+      "vol_ratio": 1.1,
+      "from_high_pct": -51.5
     },
     "AMD": {
-      "close": 627.85,
-      "chg1d": 2.15,
-      "hi52": 628.92,
+      "close": 629.26,
+      "chg1d": 2.38,
+      "hi52": 630.79,
       "lo52": 154.78,
-      "rsi": 72.7,
-      "vol_ratio": 0.97,
+      "rsi": 72.8,
+      "vol_ratio": 1.17,
       "from_high_pct": -0.2
     }
   }
