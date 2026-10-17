@@ -207,7 +207,7 @@ def init_futu():
         return None
 
 
-quote_ctx = init_futu()
+quote_ctx = None
 
 
 def requested_start(period):
