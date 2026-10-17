@@ -1,7 +1,13 @@
-streamlit>=1.32.0
-yfinance>=0.2.38
-pandas>=2.0.0
-numpy>=1.24.0
-plotly>=5.18.0
-supabase>=2.0.0
-requests>=2.31.0
+streamlit>=1.37,<2
+yfinance>=0.2.54,<1
+pandas>=2.2,<3
+numpy>=1.26,<3
+plotly>=5.24,<7
+requests>=2.32,<3
+lxml>=5,<7
+html5lib>=1.1,<2
+exchange-calendars>=4.5,<5
+tzdata>=2024.1
+fpdf2>=2.8,<3
+# Optional Futu support; requires a separately running OpenD and quote permissions.
+futu-api>=9,<11
