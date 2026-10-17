@@ -28,7 +28,7 @@ try:
 except ImportError:
     PDF_AVAILABLE = False
 
-st.set_page_config(page_title="📈 股票監察系統 Pro+ V4.4", page_icon="📈", layout="wide")
+st.set_page_config(page_title="📈 股票監察系統 Pro+ V4.5 (TSPR 整合版)", page_icon="📈", layout="wide")
 
 C_RED = "#f85149"
 C_GREEN = "#3fb950"
@@ -38,8 +38,8 @@ C_PURPLE = "#bc8cff"
 C_GREY = "#8b949e"
 C_BG = "#0d1117"
 
-APP_VERSION = "V4.4-Validation-Portfolio-Risk"
-MODEL_VERSION = "decision-v4.4"
+APP_VERSION = "V4.5-TSPR-Pattern-Portfolio-Risk"
+MODEL_VERSION = "decision-v4.5-tspr"
 AUTO_REFRESH_SEC = 1800
 OHLCV_TTL = 1800
 INFO_TTL = 3600
@@ -56,7 +56,7 @@ HK_WATCHLIST = [
     "1299.HK", "0001.HK", "9988.HK", "0175.HK", "0027.HK", "2628.HK",
     "0011.HK", "0688.HK", "3690.HK", "9618.HK", "0981.HK", "9999.HK",
     "2382.HK", "0291.HK", "1211.HK", "0267.HK", "2688.HK", "0762.HK",
-    "6862.HK", "0960.HK", "2020.HK", "1810.HK", "1024.HK"
+    "6862.HK", "0960.HK", "2020.HK", "1810.HK", "1024.HK", "3033.HK"
 ]
 
 US_WATCHLIST = [
@@ -66,7 +66,7 @@ US_WATCHLIST = [
     "UNH", "PFE", "XOM", "NEE", "UBER", "LITE", "CLX", "NFLX"
 ]
 
-ETF_TICKERS = {"SPY", "QQQ", "SOXL", "IWM"}
+ETF_TICKERS = {"SPY", "QQQ", "SOXL", "IWM", "3033.HK", "2800.HK", "2828.HK"}
 MACRO_TICKERS = {
     "VIX": "^VIX", "VVIX": "^VVIX", "SPX": "^GSPC", "HSI": "^HSI",
     "NDX": "^NDX", "DXY": "DX-Y.NYB", "US10Y": "^TNX", "VHSI": "^VHSI",
@@ -84,7 +84,8 @@ SECTOR_MAP_FALLBACK = {
     "0016.HK": "HK_PROPERTY", "0688.HK": "HK_PROPERTY", "0012.HK": "HK_PROPERTY",
     "0001.HK": "HK_PROPERTY", "0083.HK": "HK_PROPERTY",
     "0700.HK": "HK_TECH", "9988.HK": "HK_TECH", "3690.HK": "HK_TECH",
-    "9618.HK": "HK_TECH", "9999.HK": "HK_TECH", "1810.HK": "HK_TECH"
+    "9618.HK": "HK_TECH", "9999.HK": "HK_TECH", "1810.HK": "HK_TECH",
+    "3033.HK": "HK_TECH_ETF"
 }
 
 st.markdown("""
@@ -96,6 +97,7 @@ h1,h2,h3,h4,h5,h6,p,label,.stMarkdown {color:#e6edf3!important;}
 .decision-card {background:#161b22;border:1px solid #30363d;border-left:5px solid #58a6ff;border-radius:10px;padding:16px;margin:10px 0;}
 .warn-card {background:#2b1a1a;border:1px solid #f85149;border-radius:10px;padding:12px;margin:8px 0;}
 .good-card {background:#102419;border:1px solid #3fb950;border-radius:10px;padding:12px;margin:8px 0;}
+.tspr-panel {background:#161b22;border:1px solid #4a148c;border-radius:8px;padding:12px;margin-bottom:12px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -172,7 +174,7 @@ init_db()
 
 def to_futu(ticker):
     if ticker.endswith(".HK"):
-        return f"HK.{ticker[:-3]}"
+        return f"HK.{ticker[:-3].zfill(5)}"
     if ticker.replace("-", "").isalpha():
         return f"US.{ticker}"
     return ticker
@@ -203,7 +205,7 @@ def requested_start(period):
 
 @st.cache_data(ttl=OHLCV_TTL)
 def fetch_ohlcv(ticker, period="1y", interval="1d"):
-    if quote_ctx and interval == "1d":
+    if quote_ctx and interval == "1d" and not ticker.startswith("^") and "=" not in ticker:
         try:
             start = requested_start(period)
             with FUTU_LOCK:
@@ -261,7 +263,7 @@ def get_full_stock_info(ticker):
         "book_value": None, "sector": None, "industry": None, "info_source": "Yahoo",
         "fundamental_updated": None
     }
-    if quote_ctx:
+    if quote_ctx and not ticker.startswith("^"):
         try:
             with FUTU_LOCK:
                 ret, data = quote_ctx.get_market_snapshot([to_futu(ticker)])
@@ -359,6 +361,147 @@ def calc_avwap_from_recent_low(df, lookback=60):
     typical = (subset["high"] + subset["low"] + subset["close"]) / 3
     avwap = (typical * subset["volume"]).cumsum() / subset["volume"].cumsum().replace(0, np.nan)
     return avwap
+
+
+# ==================== 新增：TSPR 10日支持位與形態識別核心模組 ====================
+def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3):
+    """
+    計算 TSPR (Trend & Support Pattern Recognition)
+    - 捕捉 10日結構支持位 (Pivot Low)
+    - 檢測收市跌穿 10日支持位 -> 展開調整訊號
+    - 生成多段週期紫色形態箱體 (Pattern Boxes) 及黃金分割 1.236 倍目標統計
+    """
+    if df is None or len(df) < left_bars + right_bars + 5:
+        return {
+            "active_support": np.nan, "is_broken": False, "status": "資料不足",
+            "support_events": [], "breakdown_events": [], "support_lines": [],
+            "pattern_boxes": [], "stats": {}
+        }
+
+    lows = df["low"].values
+    highs = df["high"].values
+    closes = df["close"].values
+    dates = df.index
+    n = len(df)
+
+    support_events = []
+    breakdown_events = []
+    support_lines = []
+
+    active_support = None
+    support_start_idx = None
+    is_broken = False
+    last_pivot_idx = -999
+
+    for i in range(left_bars + right_bars, n):
+        pivot_idx = i - right_bars
+        window_lows = lows[pivot_idx - left_bars: i + 1]
+        left_window = lows[pivot_idx - left_bars: pivot_idx]
+
+        # 確認 10 日波段低點 (確保為區間最低且不重複觸發相鄰平底)
+        if (
+            np.isfinite(lows[pivot_idx])
+            and lows[pivot_idx] == np.nanmin(window_lows)
+            and lows[pivot_idx] < np.nanmin(left_window)
+            and (pivot_idx - last_pivot_idx) >= right_bars
+        ):
+            if active_support is not None and not is_broken:
+                support_lines.append({
+                    "start_date": dates[support_start_idx],
+                    "end_date": dates[pivot_idx],
+                    "price": active_support,
+                    "broken": False
+                })
+            active_support = float(lows[pivot_idx])
+            support_start_idx = pivot_idx
+            last_pivot_idx = pivot_idx
+            is_broken = False
+            support_events.append({
+                "idx": pivot_idx,
+                "date": dates[pivot_idx],
+                "price": active_support
+            })
+
+        # 檢測收市價是否跌穿當前生效的 10 日支持位
+        if active_support is not None and not is_broken and i > support_start_idx:
+            if closes[i] < active_support:
+                is_broken = True
+                breakdown_events.append({
+                    "idx": i,
+                    "date": dates[i],
+                    "price": float(closes[i]),
+                    "high": float(highs[i]),
+                    "broken_support": active_support
+                })
+                support_lines.append({
+                    "start_date": dates[support_start_idx],
+                    "end_date": dates[i],
+                    "price": active_support,
+                    "broken": True
+                })
+
+    if active_support is not None and not is_broken:
+        support_lines.append({
+            "start_date": dates[support_start_idx],
+            "end_date": dates[-1],
+            "price": active_support,
+            "broken": False
+        })
+
+    # 建立多段週期紫色形態箱體 (重現圖二、圖三的多階段 Pattern Box)
+    pattern_boxes = []
+    for b in range(num_boxes):
+        end_idx = n - b * box_period
+        start_idx = max(0, end_idx - box_period)
+        if end_idx - start_idx < 15:
+            break
+        sub = df.iloc[start_idx:end_idx]
+        pattern_boxes.append({
+            "start_date": sub.index[0],
+            "end_date": sub.index[-1],
+            "high": float(sub["high"].max()),
+            "low": float(sub["low"].min())
+        })
+
+    # 計算當前週期量化面板統計
+    recent_len = min(box_period, n)
+    recent_df = df.iloc[-recent_len:]
+    cycle_high = float(recent_df["high"].max())
+    cycle_low = float(recent_df["low"].min())
+    cycle_range = cycle_high - cycle_low
+    current_price = float(closes[-1])
+    retracement_pct = ((cycle_high - current_price) / cycle_range * 100) if cycle_range > 0 else 0.0
+    fib_1236 = cycle_low + cycle_range * 1.236
+    dist_to_sup_pct = ((current_price - active_support) / active_support * 100) if active_support else np.nan
+
+    if active_support is None:
+        status_str = "⚪ 尋底觀察中"
+    elif is_broken:
+        status_str = "🔴 跌穿10日支持 (展開調整)"
+    else:
+        status_str = "🟢 守穩10日支持 (升勢/結構維持)"
+
+    stats = {
+        "cycle_high": round(cycle_high, 2),
+        "cycle_low": round(cycle_low, 2),
+        "cycle_range": round(cycle_range, 2),
+        "retracement_pct": round(retracement_pct, 1),
+        "active_support": round(active_support, 3) if active_support else np.nan,
+        "dist_to_sup_pct": round(dist_to_sup_pct, 2) if not np.isnan(dist_to_sup_pct) else np.nan,
+        "fib_1236": round(fib_1236, 2),
+        "status": status_str
+    }
+
+    return {
+        "active_support": round(active_support, 3) if active_support else np.nan,
+        "is_broken": is_broken,
+        "status": status_str,
+        "support_events": support_events,
+        "breakdown_events": breakdown_events,
+        "support_lines": support_lines,
+        "pattern_boxes": pattern_boxes,
+        "stats": stats
+    }
 
 
 def get_52w_high(df):
@@ -556,6 +699,14 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     ma20, ma50, ma200 = close.rolling(20).mean(), close.rolling(50).mean(), close.rolling(200).mean()
     vol_z = volume_zscore(df)
     rs60 = calc_relative_strength(df, benchmark_df, 60)
+
+    # 計算 TSPR 10日結構支持與破位狀態
+    tspr = calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65)
+    tspr_sup = tspr["active_support"]
+    tspr_broken = tspr["is_broken"]
+    tspr_status = tspr["status"]
+    fib_1236 = tspr["stats"].get("fib_1236", np.nan)
+
     sector = get_sector_from_info(ticker, info)
     quality_flags, quality_blockers, quality_penalty = quality_filter(info, sector)
     val_score, val_detail = valuation_score(info, sector)
@@ -564,7 +715,7 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
 
     liquidity_20d = safe_float((df["close"] * df["volume"]).rolling(20).mean().iloc[-1], 0)
     eligibility = []
-    blockers = list(quality_blockers)
+    blockers = list(quality_blockers) if ticker not in ETF_TICKERS else []
     if price <= 0:
         blockers.append("現價無效")
     if liquidity_20d <= 0:
@@ -594,26 +745,29 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     confirm_score = 0
     confirmation_price = max(high5, safe_float(ma20.iloc[-1], price))
     if price >= avwap_now:
-        confirm_score += 20
+        confirm_score += 18
         confirmation.append("站上近 60 日低點 Anchored VWAP")
     if price >= safe_float(ma20.iloc[-1], price):
-        confirm_score += 18
+        confirm_score += 16
         confirmation.append("收復 MA20")
     if safe_float(ma20.iloc[-1]) > safe_float(ma20.iloc[-5], np.inf):
-        confirm_score += 12
+        confirm_score += 10
         confirmation.append("MA20 開始上彎")
     if safe_float(macd.iloc[-1]) > safe_float(macd_signal.iloc[-1]):
-        confirm_score += 15
+        confirm_score += 14
         confirmation.append("MACD 金叉")
     if cmf > 0:
-        confirm_score += 12
+        confirm_score += 10
         confirmation.append("CMF 資金流為正")
     if vol_z >= 0.5 and price >= safe_float(df["open"].iloc[-1], price):
         confirm_score += 10
         confirmation.append("量價確認")
     if not np.isnan(rs60) and rs60 > 0:
-        confirm_score += 13
+        confirm_score += 10
         confirmation.append(f"60 日相對強弱 +{rs60:.1f}%")
+    if not np.isnan(tspr_sup) and not tspr_broken:
+        confirm_score += 12
+        confirmation.append(f"守穩 TSPR 10日支持 ({tspr_sup:.2f})")
     confirm_score = min(100, confirm_score)
 
     trend_risk = 0
@@ -630,9 +784,18 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     if atr / price > 0.08:
         trend_risk += 12
         risk_reasons.append("波動率偏高")
+    if tspr_broken:
+        trend_risk += 15
+        risk_reasons.append(f"跌穿 TSPR 10日支持位 ({tspr_sup:.2f}) 展開調整")
     risk_score = min(100, trend_risk)
 
-    structural_stop = min(low20, price - 2 * atr)
+    # 結合 TSPR 10日支持位與 20日低點設定結構止損
+    base_stop = min(low20, price - 2 * atr)
+    if not np.isnan(tspr_sup) and not tspr_broken and tspr_sup < price:
+        structural_stop = max(base_stop, tspr_sup * 0.995)
+    else:
+        structural_stop = base_stop
+
     stop_loss = max(0.01, structural_stop)
     per_share_risk = price - stop_loss
     target_2r = price + 2 * per_share_risk
@@ -641,20 +804,26 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
         blockers.append("無法計算有效止損／2R 目標")
 
     regime_min_confirm = 62 if regime["name"] == "bear_high_vol" else 52 if regime["name"].startswith("bear") else 45
-    final_score = clip_score(0.28 * val_score + 0.18 * bottom_score + 0.32 * confirm_score + 0.12 * min(100, max(0, 50 + rs60 if not np.isnan(rs60) else 50)) + 0.10 * (100 - risk_score))
+    final_score = clip_score(
+        0.28 * val_score
+        + 0.18 * bottom_score
+        + 0.32 * confirm_score
+        + 0.12 * min(100, max(0, 50 + rs60 if not np.isnan(rs60) else 50))
+        + 0.10 * (100 - risk_score)
+    )
 
     if blockers:
         decision = "不合資格"
         next_step = "先修正資料／品質／風險問題；不建議建立新倉。"
-    elif confirm_score >= regime_min_confirm and val_score >= 48 and risk_score <= 45 and rr_valid:
+    elif confirm_score >= regime_min_confirm and val_score >= 48 and risk_score <= 45 and rr_valid and not tspr_broken:
         decision = "可小量試倉"
-        next_step = "只在收市站穩確認價或下一交易日可執行價格進場；嚴守止損。"
+        next_step = "收市守穩 TSPR 10日支持並突破確認價可分批執行；跌穿 10日支持位嚴格止損。"
     elif val_score >= 48 and (bottom_score >= 35 or confirm_score >= 28):
         decision = "等待突破"
-        next_step = "建立價格提醒；未突破確認價前不視為買入訊號。"
+        next_step = "建立價格提醒；等待重建 10日支持或突破確認價前不視為買入訊號。"
     elif val_score >= 48:
         decision = "估值觀察"
-        next_step = "公司可能有估值吸引力，但尚未看到足夠反轉確認。"
+        next_step = "公司可能有估值吸引力，但尚未看到足夠反轉確認或正處於破位調整浪。"
     else:
         decision = "不合資格"
         next_step = "估值與風險回報不足，暫不列作候選。"
@@ -670,11 +839,12 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
         "ticker": ticker, "name": info.get("name", ticker), "sector": sector,
         "price": round(price, 3), "last_bar": str(pd.Timestamp(df.index[-1]).date()),
         "decision": decision, "next_step": next_step, "final_score": round(final_score, 1),
+        "tspr_status": tspr_status, "tspr_support": tspr_sup, "fib_1236": fib_1236,
         "valuation_score": round(val_score, 1), "undervaluation": undervaluation,
         "valuation_detail": val_detail, "bottom_score": round(bottom_score, 1),
         "confirm_score": round(confirm_score, 1), "risk_score": round(risk_score, 1),
         "quality_penalty": round(quality_penalty, 2), "quality_flags": "｜".join(quality_flags),
-        "reasons": "｜".join(reasons), "risk_reasons": "｜".join(risk_reasons) if risk_reasons else "未见主要风险扣减",
+        "reasons": "｜".join(reasons), "risk_reasons": "｜".join(risk_reasons) if risk_reasons else "未見主要風險扣減",
         "blockers": "｜".join(blockers) if blockers else "—", "confirmation_price": round(confirmation_price, 3),
         "stop_loss": round(stop_loss, 3), "target_2r": round(target_2r, 3),
         "drawdown": round(drawdown, 1), "rsi": round(rsi, 1), "weekly_rsi": round(weekly_rsi_now, 1),
@@ -781,7 +951,7 @@ def render_metrics(macro_data, regime):
             value = safe_float(item.get("val"), 0)
             change = safe_float(item.get("chg"), 0)
             col.metric(label, f"{value:.2f}", f"{change:+.2f}%")
-    st.caption(f"本市场 Regime：{regime['name']}｜基准：{regime['benchmark']}｜60日回报：{regime['return_60d']:.1f}%｜年化波动：{regime['vol']:.1f}%")
+    st.caption(f"本市場 Regime：{regime['name']}｜基準：{regime['benchmark']}｜60日回報：{regime['return_60d']:.1f}%｜年化波動：{regime['vol']:.1f}%")
 
 
 elapsed = time.time() - st.session_state.last_refresh
@@ -790,22 +960,22 @@ mins, secs = divmod(remaining, 60)
 
 with st.sidebar:
     st.markdown("## ⚙️ 控制面板")
-    st.markdown(f"🔄 快取刷新倒计时：**{mins:02d}:{secs:02d}**")
+    st.markdown(f"🔄 快取刷新倒計時：**{mins:02d}:{secs:02d}**")
     if st.button("🔄 立即刷新"):
         st.session_state.last_refresh = time.time()
         st.cache_data.clear()
         clear_errors()
         st.rerun()
-    market = st.radio("市场", ["🇭🇰 港股", "🇺🇸 美股", "📋 自选"], index=1)
+    market = st.radio("市場", ["🇭🇰 港股", "🇺🇸 美股", "📋 自選"], index=0)
     custom_input = ""
-    if market == "📋 自选":
-        custom_input = st.text_area("输入代码（每行一个）", "AAPL\nNVDA\n0700.HK\n9988.HK")
-    view_mode = st.radio("显示模式", ["新手模式", "进阶模式"], index=0)
+    if market == "📋 自選":
+        custom_input = st.text_area("輸入代碼（每行一個）", "^HSI\n3033.HK\n^NDX\n0700.HK\nNVDA")
+    view_mode = st.radio("顯示模式", ["新手模式", "進階模式"], index=0)
     if quote_ctx:
-        st.success("✅ 富途已连接：优先使用日线报价")
+        st.success("✅ 富途已連接：優先使用日線報價")
     else:
-        st.info("ℹ️ 富途未连接：使用 Yahoo Finance 备援")
-    st.caption("提示：SQLite 在某些云端部署环境不是永久储存；长期信号记录建议迁移至 Supabase/PostgreSQL。")
+        st.info("ℹ️ 富途未連接：使用 Yahoo Finance 備援")
+    st.caption("提示：SQLite 在某些雲端部署環境不是永久儲存；長期信號記錄建議遷移至 Supabase/PostgreSQL。")
 
 if elapsed >= AUTO_REFRESH_SEC:
     st.session_state.last_refresh = time.time()
@@ -814,39 +984,39 @@ if elapsed >= AUTO_REFRESH_SEC:
     st.rerun()
 
 macro_data = fetch_macro()
-regime = classify_market_state(market if market != "📋 自选" else "🇺🇸 美股", macro_data)
+regime = classify_market_state(market if market != "📋 自選" else "🇺🇸 美股", macro_data)
 benchmark_df = fetch_ohlcv(regime["benchmark"], period="2y")
 
-st.markdown("# 📈 股票監察系統 Pro+｜V4.4 驗證與組合風控版")
+st.markdown("# 📈 股票監察系統 Pro+｜V4.5 TSPR 量化支持與組合風控版")
 st.caption(f"模型：{MODEL_VERSION}｜程式版本：{APP_VERSION}｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
-st.warning("本系统用于研究与风险管理，不构成投资建议。任何“可小量试仓”都不是预测见底或保证收益；必须以可执行价格、止损与组合风险为准。")
+st.warning("本系統用於研究與風險管理，不構成投資建議。任何「可小量試倉」都不是預測見底或保證收益；必須以可執行價格、10日結構支持止損與組合風險為準。")
 
 tabs = st.tabs([
-    "🌍 市场气氛", "📊 决策扫描", "💎 估值候选", "📈 技术图表", "📐 回撤/江恩",
-    "🧪 Walk-forward 回测", "⚖️ 组合风控", "🌟 因子选股", "🛠️ 系统健康"
+    "🌍 市場氣氛", "📊 決策掃描", "💎 估值候選", "📈 技術圖表 (含TSPR)", "📐 回撤/江恩",
+    "🧪 Walk-forward 回測", "⚖️ 組合風控", "🌟 因子選股", "🛠️ 系統健康"
 ])
 
 with tabs[0]:
-    st.subheader("🌍 宏观市场气氛")
+    st.subheader("🌍 宏觀市場氣氛")
     render_metrics(macro_data, regime)
     st.markdown("""
-**如何使用 Regime：** 熊市高波动并不自动提高撈底分数；系统会提高反转确认门槛。牛市也不代表可以追高，仍要检查估值、结构止损和组合风险。
+**如何使用 Regime 與 TSPR：** 熊市高波動並不自動提高撈底分數；系統會提高反轉確認門檻，且必須確認價格守穩 **TSPR 10日結構支持位**。一旦跌穿 10 日支持位，代表正式展開調整。
 
-**数据时间说明：** 每个个股结果会显示最后一根价格 bar 日期；页面时间不等于报价时间。
+**數據時間說明：** 每個個股結果會顯示最後一根價格 bar 日期；頁面時間不等於報價時間。
 """)
 
 with tabs[1]:
-    st.subheader("📊 决策扫描｜资格 → 估值 → 反转确认 → 风险")
+    st.subheader("📊 決策掃描｜資格 → 估值 → TSPR 10日支持與反轉確認 → 風險")
     if market == "🇭🇰 港股":
         tickers = HK_WATCHLIST
     elif market == "🇺🇸 美股":
         tickers = US_WATCHLIST
     else:
         tickers = [x.strip().upper() for x in custom_input.splitlines() if x.strip()]
-    st.caption(f"本次扫描 {len(tickers)} 个代码。扫描只突出值得进一步研究者；系统仍会保存全部扫描快照供后续核查。")
-    if st.button("🚀 执行 V4.4 决策扫描", type="primary", key="decision_scan"):
+    st.caption(f"本次掃描 {len(tickers)} 個代碼。已整合 TSPR 10日結構支持位與破位轉勢檢測。")
+    if st.button("🚀 執行 V4.5 (含 TSPR) 決策掃描", type="primary", key="decision_scan"):
         clear_errors()
-        progress = st.progress(0, text="下载基本面资料…")
+        progress = st.progress(0, text="下載基本面資料…")
         info_map = {}
         with ThreadPoolExecutor(max_workers=MAX_WORKERS_DATA) as executor:
             futures = {executor.submit(get_full_stock_info, ticker): ticker for ticker in tickers}
@@ -855,9 +1025,9 @@ with tabs[1]:
                 try:
                     info_map[ticker] = future.result()
                 except Exception as exc:
-                    add_error("基本面并行工作失败", ticker, exc)
+                    add_error("基本面平行工作失敗", ticker, exc)
                 progress.progress(int(i / max(1, len(tickers)) * 35), text=f"基本面 {i}/{len(tickers)}")
-        progress.progress(40, text="下载价格与计算决策…")
+        progress.progress(40, text="下載價格與計算 TSPR 決策…")
         data_map = fetch_multiple(tickers, period="2y")
         results = []
         with ThreadPoolExecutor(max_workers=MAX_WORKERS_SCORE) as executor:
@@ -870,8 +1040,8 @@ with tabs[1]:
                         results.append(result)
                         save_snapshot_and_signal(result)
                 except Exception as exc:
-                    add_error("决策模型工作失败", ticker, exc)
-                progress.progress(40 + int(i / max(1, len(tickers)) * 60), text=f"评分 {i}/{len(tickers)}")
+                    add_error("決策模型工作失敗", ticker, exc)
+                progress.progress(40 + int(i / max(1, len(tickers)) * 60), text=f"評分 {i}/{len(tickers)}")
         progress.empty()
         st.session_state["latest_results"] = results
 
@@ -882,40 +1052,70 @@ with tabs[1]:
         df_results["_rank"] = df_results["decision"].map(candidate_order).fillna(9)
         df_results = df_results.sort_values(["_rank", "final_score"], ascending=[True, False]).drop(columns="_rank")
         candidates = df_results[df_results["decision"].isin(["可小量試倉", "等待突破", "估值觀察"])]
-        st.success(f"扫描完成：{len(df_results)} 个有效结果；研究候选 {len(candidates)} 个；可小量试仓 {sum(df_results['decision'] == '可小量試倉')} 个。")
-        display_cols = ["ticker", "name", "price", "decision", "undervaluation", "final_score", "valuation_score", "bottom_score", "confirm_score", "risk_score", "confirmation_price", "stop_loss", "target_2r", "last_bar"]
+        st.success(f"掃描完成：{len(df_results)} 個有效結果；研究候選 {len(candidates)} 個；可小量試倉 {sum(df_results['decision'] == '可小量試倉')} 個。")
+        display_cols = [
+            "ticker", "name", "price", "decision", "tspr_status", "tspr_support",
+            "undervaluation", "final_score", "valuation_score", "bottom_score",
+            "confirm_score", "risk_score", "confirmation_price", "stop_loss", "target_2r", "last_bar"
+        ]
         st.dataframe(candidates[display_cols], use_container_width=True, hide_index=True)
-        if view_mode == "进阶模式":
-            st.markdown("### 完整审核表")
+        if view_mode == "進階模式":
+            st.markdown("### 完整審核表")
             st.dataframe(df_results, use_container_width=True, hide_index=True)
         for _, row in candidates.head(8).iterrows():
             color = C_GREEN if row["decision"] == "可小量試倉" else C_ORANGE
-            st.markdown(f"<div class='decision-card' style='border-left-color:{color}'><b>{row['ticker']}｜{row['decision']}｜{row['undervaluation']}</b><br>原因：{row['reasons']}<br>确认价：{row['confirmation_price']}｜止损：{row['stop_loss']}｜2R：{row['target_2r']}<br>下一步：{row['next_step']}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='decision-card' style='border-left-color:{color}'>"
+                f"<b>{row['ticker']} ({row['name']})｜{row['decision']}｜{row['tspr_status']}｜{row['undervaluation']}</b><br>"
+                f"原因：{row['reasons']}<br>"
+                f"10日支持位：{row['tspr_support']}｜確認價：{row['confirmation_price']}｜止損：{row['stop_loss']}｜2R：{row['target_2r']}｜1.236倍目標：{row['fib_1236']}<br>"
+                f"下一步：{row['next_step']}</div>",
+                unsafe_allow_html=True
+            )
     else:
-        st.info("按“执行 V4.4 决策扫描”后会显示研究候选。")
+        st.info("按「執行 V4.5 (含 TSPR) 決策掃描」後會顯示研究候選。")
 
 with tabs[2]:
-    st.subheader("💎 估值候选｜先看便宜，再看是否值得买")
+    st.subheader("💎 估值候選｜先看便宜，再看是否值得買")
     results = st.session_state.get("latest_results", [])
     if not results:
-        st.info("请先在“决策扫描”完成扫描。")
+        st.info("請先在「決策掃描」完成掃描。")
     else:
         val_df = pd.DataFrame(results)
         val_df = val_df[val_df["undervaluation"].isin(["🟢 重度被低估", "🟠 中度被低估", "🟡 輕度被低估"])]
-        st.dataframe(val_df[["ticker", "name", "undervaluation", "valuation_score", "quality_flags", "decision", "confirm_score", "risk_score", "valuation_detail", "blockers"]].sort_values("valuation_score", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(
+            val_df[["ticker", "name", "undervaluation", "valuation_score", "tspr_status", "tspr_support", "quality_flags", "decision", "confirm_score", "risk_score", "valuation_detail", "blockers"]].sort_values("valuation_score", ascending=False),
+            use_container_width=True, hide_index=True
+        )
         st.markdown("""
-- **轻度被低估：** 估值有吸引力，但证据有限或仍须等待技术确认。
-- **中度被低估：** 多项现时估值指标处于较低区间，仍必须检查基本面与风险。
-- **重度被低估：** 现时估值指标明显偏低且未触发质量否决；不等于必然反弹。
-
-当前版本不把“以今天 EPS/PB 回推过去股价”伪装成真实历史估值百分位；真正的历史估值百分位必须使用每一个历史时点可见的财报数据。
+- **輕度被低估：** 估值有吸引力，但證據有限或仍須等待技術確認。
+- **中度被低估：** 多項現時估值指標處於較低區間，仍必須檢查基本面與風險。
+- **重度被低估：** 現時估值指標明顯偏低且未觸發質量否決；不等於必然反彈。
 """)
 
 with tabs[3]:
-    st.subheader("📈 技术图表｜真实周 RSI 与 Anchored VWAP")
-    ticker = st.text_input("股票代码", "AAPL", key="chart_ticker").upper()
-    period_map = {"3个月": "3mo", "6个月": "6mo", "1年": "1y", "2年": "2y"}
-    period = st.radio("时间范围", list(period_map.keys()), horizontal=True, index=2)
+    st.subheader("📈 技術圖表｜TSPR 10日支持位、形態箱體、真周 RSI 與 Anchored VWAP")
+
+    col_q1, col_q2, col_q3 = st.columns([2, 2, 3])
+    with col_q1:
+        quick_pick = st.selectbox(
+            "快速切換大市指數 / 個股",
+            ["自訂輸入", "^HSI (恒生指數)", "3033.HK (南方恒生科技)", "^NDX (納斯達克100)", "^GSPC (標普500)", "0700.HK (騰訊)", "NVDA (Nvidia)"],
+            index=1
+        )
+    with col_q2:
+        default_tk = "^HSI" if quick_pick == "^HSI (恒生指數)" else quick_pick.split(" ")[0] if quick_pick != "自訂輸入" else "AAPL"
+        ticker = st.text_input("股票或指數代碼", default_tk, key="chart_ticker").upper()
+    with col_q3:
+        period_map = {"3個月": "3mo", "6個月": "6mo", "1年": "1y", "2年": "2y"}
+        period = st.radio("時間範圍", list(period_map.keys()), horizontal=True, index=2)
+
+    t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+    show_tspr_labels = t_col1.checkbox("顯示 TSPR 10日支持與破位標籤", value=True)
+    show_tspr_boxes = t_col2.checkbox("顯示紫色週期形態框 (Pattern Box)", value=True)
+    left_bars_input = t_col3.number_input("支持位左側週期 (日)", min_value=5, max_value=30, value=10)
+    box_period_input = t_col4.number_input("形態箱體週期 (日)", min_value=30, max_value=120, value=65)
+
     chart_df = fetch_ohlcv(ticker, period=period_map[period])
     if chart_df is not None and len(chart_df) > 30:
         close = chart_df["close"]
@@ -923,12 +1123,78 @@ with tabs[3]:
         weekly_rsi, _ = calc_weekly_rsi_daily_aligned(close)
         macd, signal, hist = calc_macd(close)
         avwap = calc_avwap_from_recent_low(chart_df)
-        fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.50, 0.15, 0.15, 0.20])
-        fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df["open"], high=chart_df["high"], low=chart_df["low"], close=close, name="K线"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=close.rolling(20).mean(), name="MA20", line=dict(color="#f0883e")), row=1, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=close.rolling(50).mean(), name="MA50", line=dict(color=C_BLUE)), row=1, col=1)
+
+        # 執行 TSPR 計算
+        tspr_res = calc_tspr_system(chart_df, left_bars=int(left_bars_input), right_bars=5, box_period=int(box_period_input), num_boxes=3)
+        st_data = tspr_res["stats"]
+
+        # 頂部復刻圖二右上角 TSPR 量化統計面板
+        st.markdown("<div class='tspr-panel'>", unsafe_allow_html=True)
+        m_cols = st.columns(7)
+        m_cols[0].metric("週期最高", f"{st_data.get('cycle_high', 0):,.2f}")
+        m_cols[1].metric("週期最低", f"{st_data.get('cycle_low', 0):,.2f}")
+        m_cols[2].metric("週期波幅", f"{st_data.get('cycle_range', 0):,.2f}")
+        m_cols[3].metric("高點回調幅度", f"{st_data.get('retracement_pct', 0):.1f}%")
+        m_cols[4].metric("10日關鍵支持", f"{st_data.get('active_support', np.nan):,.2f}" if not np.isnan(st_data.get("active_support", np.nan)) else "N/A")
+        m_cols[5].metric("黃金分割 1.236倍", f"{st_data.get('fib_1236', 0):,.2f}")
+        m_cols[6].metric("TSPR 趨勢狀態", st_data.get("status", "N/A"))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.55, 0.13, 0.15, 0.17])
+        fig.add_trace(go.Candlestick(
+            x=chart_df.index, open=chart_df["open"], high=chart_df["high"],
+            low=chart_df["low"], close=close,
+            increasing_line_color="#26a69a", decreasing_line_color="#ef5350", name="K線"
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=close.rolling(20).mean(), name="MA20", line=dict(color="#f0883e", width=1.2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=close.rolling(50).mean(), name="MA50", line=dict(color=C_BLUE, width=1.2)), row=1, col=1)
         if not avwap.empty:
-            fig.add_trace(go.Scatter(x=avwap.index, y=avwap, name="Anchored VWAP（近60日低点）", line=dict(color=C_PURPLE, dash="dot")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=avwap.index, y=avwap, name="Anchored VWAP（近60日低點）", line=dict(color=C_PURPLE, dash="dot")), row=1, col=1)
+
+        # 繪製 TSPR 紫色形態箱體 (Pattern Boxes)
+        if show_tspr_boxes:
+            for box in tspr_res["pattern_boxes"]:
+                fig.add_shape(
+                    type="rect",
+                    x0=box["start_date"], y0=box["low"],
+                    x1=box["end_date"], y1=box["high"],
+                    line=dict(color="rgba(188, 140, 255, 0.75)", width=1.5, dash="dash"),
+                    fillcolor="rgba(74, 20, 140, 0.16)",
+                    layer="below", row=1, col=1
+                )
+
+        # 繪製 TSPR 10日支持水平虛線、綠色支持標籤與紅色跌穿標籤
+        if show_tspr_labels:
+            for s_line in tspr_res["support_lines"]:
+                line_col = "#ef5350" if s_line["broken"] else "#3fb950"
+                fig.add_shape(
+                    type="line",
+                    x0=s_line["start_date"], y0=s_line["price"],
+                    x1=s_line["end_date"], y1=s_line["price"],
+                    line=dict(color=line_col, width=1.5, dash="dash"),
+                    row=1, col=1
+                )
+            for ev in tspr_res["support_events"]:
+                fig.add_annotation(
+                    x=ev["date"], y=ev["price"],
+                    text=f"10日支持<br>{ev['price']:.2f}",
+                    showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1,
+                    arrowcolor="#2e7d32", ax=0, ay=30,
+                    bgcolor="#1b5e20", bordercolor="#4caf50",
+                    font=dict(color="white", size=10),
+                    row=1, col=1
+                )
+            for brk in tspr_res["breakdown_events"]:
+                fig.add_annotation(
+                    x=brk["date"], y=brk["high"],
+                    text=f"跌穿支持<br>{brk['price']:.2f}",
+                    showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1,
+                    arrowcolor="#c62828", ax=0, ay=-30,
+                    bgcolor="#b71c1c", bordercolor="#ef5350",
+                    font=dict(color="white", size=10),
+                    row=1, col=1
+                )
+
         fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["volume"], name="成交量", marker_color=[C_GREEN if c >= o else C_RED for c, o in zip(chart_df["close"], chart_df["open"])]), row=2, col=1)
         fig.add_trace(go.Scatter(x=chart_df.index, y=rsi, name="日 RSI(14)", line=dict(color=C_ORANGE)), row=3, col=1)
         fig.add_trace(go.Scatter(x=chart_df.index, y=weekly_rsi, name="真周 RSI(14)", line=dict(color=C_PURPLE, dash="dot")), row=3, col=1)
@@ -937,92 +1203,96 @@ with tabs[3]:
         fig.add_trace(go.Bar(x=chart_df.index, y=hist, name="MACD Histogram", marker_color=[C_GREEN if x >= 0 else C_RED for x in hist.fillna(0)]), row=4, col=1)
         fig.add_trace(go.Scatter(x=chart_df.index, y=macd, name="MACD", line=dict(color=C_BLUE)), row=4, col=1)
         fig.add_trace(go.Scatter(x=chart_df.index, y=signal, name="Signal", line=dict(color=C_ORANGE)), row=4, col=1)
-        fig.update_layout(height=850, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
+        fig.update_layout(height=900, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True, key=f"technical_chart_{ticker}_{period}")
-        st.caption("真周 RSI：先取每周五收市价，再计算 RSI(14)。Anchored VWAP：从近 60 日低点开始计算的成交量加权均价，用作观察成本密集区，不是保证支撑。")
+        st.caption("TSPR 邏輯：每次確認 10 日波段低點即建立綠色支持標籤與水平防守虛線；當收市價跌穿該支持位即彈出紅色標籤確認展開調整。")
 
 with tabs[4]:
-    st.subheader("📐 回撤、斐波那契与江恩观察位")
-    ticker = st.text_input("股票代码", "NVDA", key="levels_ticker").upper()
-    if st.button("计算观察位", key="calc_levels"):
+    st.subheader("📐 回撤、斐波那契与江恩觀察位")
+    ticker = st.text_input("股票代碼", "NVDA", key="levels_ticker").upper()
+    if st.button("計算觀察位", key="calc_levels"):
         df = fetch_ohlcv(ticker, period="2y")
         if df is None or df.empty:
-            st.error("无法取得价格数据。")
+            st.error("無法取得價格數據。")
         else:
             current = safe_float(df["close"].iloc[-1])
             high = get_52w_high(df)
             low = safe_float(df["low"].iloc[-252:].min())
+            tspr_info = calc_tspr_system(df)
             cols = st.columns(3)
-            cols[0].dataframe(pd.DataFrame([{"回撤": k, "价位": v} for k, v in drop_levels(high).items()]), hide_index=True)
-            cols[1].dataframe(pd.DataFrame([{"Fib": k, "价位": v} for k, v in fib_levels(low, high).items()]), hide_index=True)
-            cols[2].dataframe(pd.DataFrame([{"江恩比例": k, "价位": v} for k, v in gann_levels(low, high).items()]), hide_index=True)
-            st.caption(f"现价：{current:.3f}。这些是价格观察区，不是预测必然反转的目标价。")
+            cols[0].dataframe(pd.DataFrame([{"回撤": k, "價位": v} for k, v in drop_levels(high).items()]), hide_index=True)
+            cols[1].dataframe(pd.DataFrame([{"Fib": k, "價位": v} for k, v in fib_levels(low, high).items()]), hide_index=True)
+            cols[2].dataframe(pd.DataFrame([{"江恩比例": k, "價位": v} for k, v in gann_levels(low, high).items()]), hide_index=True)
+            st.caption(f"現價：{current:.3f}｜TSPR 10日關鍵支持位：{tspr_info['active_support']}｜週期 1.236 倍目標：{tspr_info['stats'].get('fib_1236')}｜狀態：{tspr_info['status']}")
 
 with tabs[5]:
-    st.subheader("🧪 严格 Walk-forward 回测")
-    st.markdown("信号在收市后产生；回测以**下一交易日开盘价加滑点**进场。纳入止损、2R 目标、固定持有期、成本；若同一日同时触及止损与目标，保守地按先止损处理。")
+    st.subheader("🧪 嚴格 Walk-forward 回測")
+    st.markdown("信號在收市後產生；回測以**下一交易日開盤價加滑點**進場。納入止損、2R 目標、固定持有期、成本；若同一日同時觸及止損與目標，保守地按先止損處理。")
     try:
         conn = sqlite3.connect(DB_FILE)
         signals = pd.read_sql_query("SELECT * FROM signals ORDER BY signal_date DESC", conn)
         conn.close()
     except Exception as exc:
-        add_error("读取回测信号失败", exc=exc)
+        add_error("讀取回測信號失敗", exc=exc)
         signals = pd.DataFrame()
     if signals.empty:
-        st.info("尚无“可小量试仓”信号。先运行决策扫描，系统会按信号日、代码和模型版本去重记录。")
+        st.info("尚無「可小量試倉」信號。先運行決策掃描，系統會按信號日、代碼和模型版本去重記錄。")
     else:
         st.dataframe(signals[["signal_date", "ticker", "decision", "total_score", "price", "confirmation_price", "stop_loss", "target_2r", "market_regime", "model_version"]], use_container_width=True, hide_index=True)
         c1, c2, c3 = st.columns(3)
         with c1:
-            hold_days = st.selectbox("最长持有交易日", [10, 20, 30, 45], index=1)
+            hold_days = st.selectbox("最長持有交易日", [10, 20, 30, 45], index=1)
         with c2:
-            cost_bps = st.number_input("单边交易成本（bps）", min_value=0, max_value=100, value=TRANSACTION_COST_BPS)
+            cost_bps = st.number_input("單邊交易成本（bps）", min_value=0, max_value=100, value=TRANSACTION_COST_BPS)
         with c3:
-            slip_bps = st.number_input("入场滑点（bps）", min_value=0, max_value=100, value=DEFAULT_SLIPPAGE_BPS)
-        if st.button("运行严格回测", type="primary", key="strict_bt"):
+            slip_bps = st.number_input("入場滑點（bps）", min_value=0, max_value=100, value=DEFAULT_SLIPPAGE_BPS)
+        if st.button("運行嚴格回測", type="primary", key="strict_bt"):
             bt = run_walk_forward_backtest(signals, hold_days, cost_bps, slip_bps)
             if bt.empty:
-                st.info("现有信号尚未成熟，或历史价格不足以完成所选持有期。")
+                st.info("現有信號尚未成熟，或歷史價格不足以完成所選持有期。")
             else:
                 st.dataframe(bt, use_container_width=True, hide_index=True)
                 cols = st.columns(4)
-                cols[0].metric("成熟样本", len(bt))
-                cols[1].metric("胜率", f"{(bt['淨回報%'] > 0).mean() * 100:.1f}%")
-                cols[2].metric("平均净回报", f"{bt['淨回報%'].mean():.2f}%")
-                cols[3].metric("中位数净回报", f"{bt['淨回報%'].median():.2f}%")
-                st.caption("样本数少、幸存者偏差、数据缺漏、公司行动和未覆盖的流动性约束都会使回测偏乐观；应累积足够点时可见的日度快照后再调权重。")
+                cols[0].metric("成熟樣本", len(bt))
+                cols[1].metric("勝率", f"{(bt['淨回報%'] > 0).mean() * 100:.1f}%")
+                cols[2].metric("平均淨回報", f"{bt['淨回報%'].mean():.2f}%")
+                cols[3].metric("中位數淨回報", f"{bt['淨回報%'].median():.2f}%")
 
 with tabs[6]:
-    st.subheader("⚖️ 组合风控与部位计算")
+    st.subheader("⚖️ 組合風控與部位計算")
     c1, c2, c3 = st.columns(3)
     with c1:
-        account_size = st.number_input("账户总值（USD）", min_value=1000.0, value=100000.0, step=1000.0)
+        account_size = st.number_input("賬戶總值（USD/HKD）", min_value=1000.0, value=100000.0, step=1000.0)
     with c2:
-        risk_pct = st.slider("单笔最大账户风险 (%)", 0.25, 3.0, 1.0, 0.25) / 100
+        risk_pct = st.slider("單筆最大賬戶風險 (%)", 0.25, 3.0, 1.0, 0.25) / 100
     with c3:
-        max_notional = st.slider("单一持仓名义上限 (%)", 3, 25, 10) / 100
-    ticker = st.text_input("计划交易代码", "AAPL", key="portfolio_ticker").upper()
-    if st.button("计算风险部位", key="position_calc"):
+        max_notional = st.slider("單一持倉名義上限 (%)", 3, 25, 10) / 100
+    ticker = st.text_input("計劃交易代碼", "AAPL", key="portfolio_ticker").upper()
+    if st.button("計算風險部位", key="position_calc"):
         df = fetch_ohlcv(ticker, period="1y")
         if df is None or len(df) < 30:
-            st.error("价格资料不足。")
+            st.error("價格資料不足。")
         else:
             price = safe_float(df["close"].iloc[-1])
             atr = safe_float(calc_atr(df).iloc[-1])
-            stop = min(safe_float(df["low"].iloc[-20:].min()), price - 2 * atr)
+            tspr_res = calc_tspr_system(df)
+            tspr_sup = tspr_res["active_support"]
+            base_stop = min(safe_float(df["low"].iloc[-20:].min()), price - 2 * atr)
+            stop = max(base_stop, tspr_sup * 0.995) if (not np.isnan(tspr_sup) and not tspr_res["is_broken"] and tspr_sup < price) else base_stop
             shares, notional, risk_amount = calculate_position(price, stop, account_size, risk_pct, max_notional)
             target = price + 2 * (price - stop)
-            cols = st.columns(4)
-            cols[0].metric("建议最大股数", f"{shares:,}")
-            cols[1].metric("名义金额", f"${notional:,.0f}")
-            cols[2].metric("若止损最大亏损", f"${min(risk_amount, shares * max(0, price-stop)):,.0f}")
-            cols[3].metric("2R 目标", f"{target:.3f}")
-            st.warning("港股下单前必须再按每手股数、货币、佣金及实际盘口流动性调整；部位模型不能替代你的总组合行业／相关性限制。")
+            cols = st.columns(5)
+            cols[0].metric("建議最大股數", f"{shares:,}")
+            cols[1].metric("名義金額", f"${notional:,.0f}")
+            cols[2].metric("結構/TSPR 止損位", f"{stop:.3f}")
+            cols[3].metric("若止損最大虧損", f"${min(risk_amount, shares * max(0, price-stop)):,.0f}")
+            cols[4].metric("2R 目標", f"{target:.3f}")
+            st.warning("港股下單前必須再按每手股數、貨幣、佣金及實際盤口流動性調整；部位模型不能替代你的總組合行業／相關性限制。")
 
 with tabs[7]:
-    st.subheader("🌟 多因子选股｜价值、质量、动能、低波动")
-    st.caption("此模块适合 3–6 个月以上研究；与短线反转系统不同。金融、亏损企业和 ETF 不适合只用 PE 与 ROE 横向比较。")
-    if st.button("执行多因子运算", type="primary", key="multi_factor"):
+    st.subheader("🌟 多因子選股｜價值、質量、動能、低波動")
+    st.caption("此模組適合 3–6 個月以上研究；與短線反轉系統不同。金融、虧損企業和 ETF 不適合只用 PE 與 ROE 橫向比較。")
+    if st.button("執行多因子運算", type="primary", key="multi_factor"):
         if market == "🇭🇰 港股":
             tickers = HK_WATCHLIST
         elif market == "🇺🇸 美股":
@@ -1037,7 +1307,7 @@ with tabs[7]:
                 try:
                     info_map[ticker] = future.result()
                 except Exception as exc:
-                    add_error("因子基本面失败", ticker, exc)
+                    add_error("因子基本面失敗", ticker, exc)
         data_map = fetch_multiple(tickers, period="1y")
         records = []
         for ticker in tickers:
@@ -1048,57 +1318,52 @@ with tabs[7]:
             close = df["close"]
             returns = close.pct_change().iloc[-126:]
             records.append({
-                "代码": ticker, "名称": info.get("name", ticker), "PE": safe_float(info.get("pe")),
-                "ROE%": safe_float(info.get("roe")) * 100, "6M动能%": (close.iloc[-1] / close.iloc[-126] - 1) * 100,
-                "年化波动%": returns.std() * np.sqrt(252) * 100
+                "代碼": ticker, "名稱": info.get("name", ticker), "PE": safe_float(info.get("pe")),
+                "ROE%": safe_float(info.get("roe")) * 100, "6M動能%": (close.iloc[-1] / close.iloc[-126] - 1) * 100,
+                "年化波動%": returns.std() * np.sqrt(252) * 100
             })
         if records:
             mf = pd.DataFrame(records)
-            for col in ["PE", "ROE%", "6M动能%", "年化波动%"]:
+            for col in ["PE", "ROE%", "6M動能%", "年化波動%"]:
                 mf[col] = mf[col].replace([np.inf, -np.inf], np.nan)
                 mf[col] = mf[col].fillna(mf[col].median())
+
             def zscore(series, inverse=False):
                 std = series.std()
                 z = pd.Series(0.0, index=series.index) if std == 0 or pd.isna(std) else (series - series.mean()) / std
                 return -z if inverse else z
-            mf["价值Z"] = zscore(mf["PE"], True)
-            mf["质量Z"] = zscore(mf["ROE%"])
-            mf["动能Z"] = zscore(mf["6M动能%"])
-            mf["防御Z"] = zscore(mf["年化波动%"], True)
-            mf["综合分"] = (mf[["价值Z", "质量Z", "动能Z", "防御Z"]].sum(axis=1)).round(2)
-            mf = mf.sort_values("综合分", ascending=False)
+
+            mf["價值Z"] = zscore(mf["PE"], True)
+            mf["質量Z"] = zscore(mf["ROE%"])
+            mf["動能Z"] = zscore(mf["6M動能%"])
+            mf["防禦Z"] = zscore(mf["年化波動%"], True)
+            mf["綜合分"] = (mf[["價值Z", "質量Z", "動能Z", "防禦Z"]].sum(axis=1)).round(2)
+            mf = mf.sort_values("綜合分", ascending=False)
             st.dataframe(mf, use_container_width=True, hide_index=True)
-            fig = px.scatter(mf, x="PE", y="6M动能%", text="代码", color="综合分", size=np.maximum(6, (mf["质量Z"] - mf["质量Z"].min() + 0.5) * 8), color_continuous_scale="RdYlGn")
+            fig = px.scatter(mf, x="PE", y="6M動能%", text="代碼", color="綜合分", size=np.maximum(6, (mf["質量Z"] - mf["質量Z"].min() + 0.5) * 8), color_continuous_scale="RdYlGn")
             fig.update_layout(template="plotly_dark", plot_bgcolor=C_BG, paper_bgcolor=C_BG, height=550)
             st.plotly_chart(fig, use_container_width=True, key="factor_scatter")
 
 with tabs[8]:
-    st.subheader("🛠️ 系统健康、数据覆盖与错误日志")
-    st.markdown("### 存储状态")
-    st.warning("目前使用本地 SQLite。若部署在 Streamlit Community Cloud 或无持久磁盘环境，重启或部署后数据库可能被清空。正式长期运行请迁移至 Supabase PostgreSQL。")
+    st.subheader("🛠️ 系統健康、數據覆蓋與錯誤日誌")
+    st.markdown("### 存儲狀態")
+    st.warning("目前使用本地 SQLite。若部署在 Streamlit Community Cloud 或無持久磁盤環境，重啟或部署後數據庫可能被清空。正式長期運行請遷移至 Supabase PostgreSQL。")
     try:
         conn = sqlite3.connect(DB_FILE)
         signal_count = pd.read_sql_query("SELECT COUNT(*) AS n FROM signals", conn).iloc[0]["n"]
         snapshot_count = pd.read_sql_query("SELECT COUNT(*) AS n FROM scan_snapshots", conn).iloc[0]["n"]
         conn.close()
         cols = st.columns(2)
-        cols[0].metric("已记录可试仓信号", int(signal_count))
-        cols[1].metric("已记录扫描快照", int(snapshot_count))
+        cols[0].metric("已記錄可試倉信號", int(signal_count))
+        cols[1].metric("已記錄掃描快照", int(snapshot_count))
     except Exception as exc:
-        add_error("读取数据库健康状态失败", exc=exc)
+        add_error("讀取數據庫健康狀態失敗", exc=exc)
     logs = st.session_state.get("error_log", [])
     if logs:
-        st.warning(f"本次页面运行记录到 {len(logs)} 项问题。请先修复数据覆盖与错误，不要仅忽略。")
+        st.warning(f"本次頁面運行記錄到 {len(logs)} 項問題。請先修復數據覆蓋與錯誤，不要僅忽略。")
         st.dataframe(pd.DataFrame(logs).iloc[::-1], use_container_width=True, hide_index=True)
-        if st.button("清除本次错误日志", key="clear_logs"):
+        if st.button("清除本次錯誤日誌", key="clear_logs"):
             clear_errors()
             st.rerun()
     else:
-        st.success("本次页面运行暂未记录错误。注意：这不代表所有历史数据完整或策略已验证。")
-    st.markdown("""
-### 下一阶段建议
-1. 使用 GitHub Actions 在港、美股收市后写入每日数据与模型快照。
-2. 将 SQLite 迁移至 PostgreSQL，保存可追溯的价格、基本面、特征和模型版本。
-3. 累积足够成熟样本后，按市场、行业、Regime 与决策层级校准真实胜率和期望值。
-4. 对江恩时间窗进行独立样本外检验；未经验证前，它只能作为风险日历。
-""")
+        st.success("本次頁面運行暫未記錄錯誤。注意：這不代表所有歷史數據完整或策略已驗證。")
