@@ -8,6 +8,3 @@ lxml>=5,<7
 html5lib>=1.1,<2
 exchange-calendars>=4.5,<5
 tzdata>=2024.1
-fpdf2>=2.8,<3
-# Optional Futu support; requires a separately running OpenD and quote permissions.
-futu-api>=9,<11
