@@ -22,19 +22,7 @@ from plotly.subplots import make_subplots
 
 warnings.filterwarnings("default", category=RuntimeWarning)
 
-try:
-    from futu import OpenQuoteContext, RET_OK, KLType
-    FUTU_AVAILABLE = True
-except ImportError:
-    FUTU_AVAILABLE = False
-
-try:
-    from fpdf import FPDF
-    PDF_AVAILABLE = True
-except ImportError:
-    PDF_AVAILABLE = False
-
-st.set_page_config(page_title="📈 股票監察系統 V4.7 四指數自動股票池", page_icon="📈", layout="wide")
+st.set_page_config(page_title="📈 股票監察系統 V4.7.2 Yahoo獨立版", page_icon="📈", layout="wide")
 
 C_RED = "#f85149"
 C_GREEN = "#3fb950"
@@ -44,17 +32,15 @@ C_PURPLE = "#bc8cff"
 C_GREY = "#8b949e"
 C_BG = "#0d1117"
 
-APP_VERSION = "V4.7-AutoPool-Top30"
-MODEL_VERSION = "decision-v4.7-data-quality"
-AUTO_REFRESH_SEC = 1800
+APP_VERSION = "V4.7.2-Yahoo-Only"
+MODEL_VERSION = "decision-v4.7.2-yahoo"
 OHLCV_TTL = 1800
 INFO_TTL = 3600
-DB_FILE = "signals.db"
-MAX_WORKERS_DATA = 5
+DB_FILE = os.getenv("STOCK_DB_FILE", "signals.db")
+MAX_WORKERS_DATA = 3
 MAX_WORKERS_SCORE = 4
 TRANSACTION_COST_BPS = 10
 DEFAULT_SLIPPAGE_BPS = 10
-FUTU_LOCK = threading.RLock()
 
 HK_WATCHLIST = [
     "0700.HK", "0005.HK", "0939.HK", "1398.HK", "3988.HK", "0388.HK",
@@ -149,7 +135,7 @@ def clear_errors():
 
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS signals (
             signal_date TEXT NOT NULL,
@@ -182,141 +168,93 @@ def init_db():
     conn.close()
 
 
-init_db()
+try:
+    init_db()
+except Exception as exc:
+    st.error(f"資料庫初始化失敗：{exc}。請先備份signals.db，再檢查磁盤權限及資料表結構。")
+    st.stop()
 
 
-def to_futu(ticker):
-    if ticker.endswith(".HK"):
-        return f"HK.{ticker[:-3].zfill(5)}"
-    if ticker.replace("-", "").isalpha():
-        return f"US.{ticker}"
-    return ticker
 
 
-@st.cache_resource
-def init_futu():
-    if not FUTU_AVAILABLE:
-        return None
-    try:
-        with FUTU_LOCK:
-            ctx = OpenQuoteContext(host=os.getenv("FUTU_HOST", "127.0.0.1"), port=int(os.getenv("FUTU_PORT", "11111")))
-            ret, _ = ctx.get_market_snapshot(["HK.00700"])
-        return ctx if ret == RET_OK else None
-    except Exception as exc:
-        add_error("富途初始化失敗，將使用 Yahoo 備援", exc=exc)
-        return None
 
 
-quote_ctx = None
 
 
-def requested_start(period):
-    now = datetime.now()
-    mapping = {"1mo": 35, "3mo": 100, "6mo": 200, "1y": 400, "2y": 800, "5y": 1900}
-    return (now - timedelta(days=mapping.get(period, 400))).strftime("%Y-%m-%d")
 
 
-@st.cache_data(ttl=OHLCV_TTL)
+
+
+
+@st.cache_data(ttl=OHLCV_TTL, show_spinner=False)
 def fetch_ohlcv(ticker, period="1y", interval="1d"):
-    if quote_ctx and interval == "1d" and not ticker.startswith("^") and "=" not in ticker:
-        try:
-            start = requested_start(period)
-            with FUTU_LOCK:
-                ret, data, _ = quote_ctx.request_history_kline(
-                    to_futu(ticker), start=start, end=None,
-                    ktype=KLType.K_DAY, max_count=1000, extended_time=False
-                )
-            if ret == RET_OK and data is not None and not data.empty:
-                columns = ["time_key", "open", "high", "low", "close", "volume"]
-                if "turnover" in data.columns:
-                    columns.append("turnover")
-                df = data[columns].copy()
-                df = df.rename(columns={"time_key": "date"})
-                df["date"] = pd.to_datetime(df["date"])
-                df = df.set_index("date")
-                df.columns = [str(c).lower() for c in df.columns]
-                return df.sort_index().dropna()
-        except Exception as exc:
-            add_error("富途 OHLCV 失敗，改用 Yahoo", ticker, exc)
     try:
-        df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False, threads=False)
-        if df is None or df.empty:
-            add_error("Yahoo 沒有回傳 OHLCV", ticker)
+        raw = yf.download(ticker, period=period, interval=interval, auto_adjust=True,
+                          progress=False, threads=False, timeout=15)
+        frame = clean_price_frame(raw)
+        if frame is None or frame.empty:
+            add_error("Yahoo未回傳可用OHLCV", ticker)
             return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.columns = [str(c).lower() for c in df.columns]
-        needed = {"open", "high", "low", "close", "volume"}
-        if not needed.issubset(df.columns):
-            add_error("OHLCV 欄位不完整", ticker)
-            return None
-        return df.sort_index().dropna()
+        return frame
     except Exception as exc:
-        add_error("Yahoo OHLCV 下載失敗", ticker, exc)
+        add_error("Yahoo OHLCV下載失敗", ticker, exc)
         return None
 
 
 def fetch_multiple(tickers, period="2y", max_workers=MAX_WORKERS_DATA):
     results = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(fetch_ohlcv, ticker, period): ticker for ticker in tickers}
-        for future in as_completed(futures):
-            ticker = futures[future]
-            try:
-                results[ticker] = future.result()
-            except Exception as exc:
-                add_error("平行 OHLCV 工作失敗", ticker, exc)
-                results[ticker] = None
+    tickers = tuple(sorted(set(tickers)))
+    for start in range(0,len(tickers),50):
+        chunk = tickers[start:start+50]
+        try:
+            frames = download_analysis_batch(chunk, period)
+            results.update(frames)
+        except Exception as exc:
+            add_error("批量日線下載失敗", exc=exc)
+        for ticker in chunk:
+            results.setdefault(ticker,None)
     return results
 
 
-@st.cache_data(ttl=INFO_TTL)
+@st.cache_data(ttl=INFO_TTL, show_spinner=False)
 def get_full_stock_info(ticker):
-    result = {
-        "ticker": ticker, "name": ticker, "pe": None, "pb": None, "div_yield": None,
-        "roe": None, "de_ratio": None, "rev_growth": None, "eps": None,
-        "book_value": None, "sector": None, "industry": None, "info_source": "Yahoo",
-        "fundamental_updated": None
-    }
-    if quote_ctx and not ticker.startswith("^"):
-        try:
-            with FUTU_LOCK:
-                ret, data = quote_ctx.get_market_snapshot([to_futu(ticker)])
-            if ret == RET_OK and data is not None and not data.empty:
-                row = data.iloc[0]
-                if pd.notna(row.get("pe_ratio")):
-                    result["pe"] = float(row.get("pe_ratio"))
-                    result["info_source"] = "富途+Yahoo"
-                if pd.notna(row.get("pb_ratio")):
-                    result["pb"] = float(row.get("pb_ratio"))
-                    result["info_source"] = "富途+Yahoo"
-                result["name"] = row.get("stock_name", ticker) or ticker
-        except Exception as exc:
-            add_error("富途基本面快照失敗", ticker, exc)
+    result = {"ticker":ticker, "name":ticker, "pe":None, "pb":None, "div_yield":None,
+              "roe":None, "de_ratio":None, "rev_growth":None, "eps":None,
+              "book_value":None, "sector":None, "industry":None,
+              "info_source":"Yahoo Finance", "fundamental_updated":None, "info_error":None,
+              "pe_basis":"未知", "fetched_at":hkt_now().isoformat()}
     try:
         info = yf.Ticker(ticker).info or {}
-        if result["name"] == ticker:
-            result["name"] = info.get("shortName") or info.get("longName") or ticker
-        if result["pe"] is None:
-            pe = info.get("trailingPE") or info.get("forwardPE")
-            if pe is None:
-                eps = info.get("trailingEps")
-                price = info.get("currentPrice") or info.get("regularMarketPrice")
-                if eps and price and eps > 0:
-                    pe = price / eps
-            result["pe"] = safe_float(pe, None)
-        if result["pb"] is None:
-            result["pb"] = safe_float(info.get("priceToBook"), None)
-        field_map = {
-            "div_yield": "dividendYield", "roe": "returnOnEquity", "de_ratio": "debtToEquity",
-            "rev_growth": "revenueGrowth", "eps": "trailingEps", "book_value": "bookValue",
-            "sector": "sector", "industry": "industry", "fundamental_updated": "lastFiscalYearEnd"
-        }
-        for field, key in field_map.items():
-            if result.get(field) is None:
-                result[field] = info.get(key)
+        result["name"] = info.get("shortName") or info.get("longName") or ticker
+        trailing = safe_float(info.get("trailingPE"),None)
+        forward = safe_float(info.get("forwardPE"),None)
+        if trailing is not None and trailing > 0:
+            result["pe"], result["pe_basis"] = trailing, "TTM"
+        elif forward is not None and forward > 0:
+            result["pe"], result["pe_basis"] = forward, "Forward（預測）"
+        else:
+            eps = safe_float(info.get("trailingEps"),None)
+            price = safe_float(info.get("currentPrice") or info.get("regularMarketPrice"),None)
+            if eps is not None and eps > 0 and price is not None and price > 0:
+                result["pe"], result["pe_basis"] = price / eps, "價格/TTM EPS"
+        result["pb"] = safe_float(info.get("priceToBook"),None)
+        fields = {"roe":"returnOnEquity", "de_ratio":"debtToEquity", "rev_growth":"revenueGrowth",
+                  "eps":"trailingEps", "book_value":"bookValue", "sector":"sector", "industry":"industry",
+                  "fundamental_updated":"lastFiscalYearEnd"}
+        for key, source in fields.items():
+            result[key] = info.get(source)
+        # Yahoo dividendYield口徑可能變動；優先用每股年息/現價計算比例。
+        dividend_rate = safe_float(info.get("dividendRate"))
+        market_price = safe_float(info.get("currentPrice") or info.get("regularMarketPrice"))
+        if np.isfinite(dividend_rate) and np.isfinite(market_price) and market_price > 0:
+            result["div_yield"] = dividend_rate / market_price
+        else:
+            result["div_yield"] = None
+        if not info:
+            result["info_error"] = "Yahoo基本面為空"
     except Exception as exc:
-        add_error("Yahoo 基本面資料失敗", ticker, exc)
+        result["info_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        add_error("Yahoo基本面失敗",ticker,exc)
     return result
 
 
@@ -439,7 +377,7 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
             and (pivot_idx - last_pivot_idx) >= right_bars
         ):
             # 若上一個破位事件正在進行，先結算該次破位至新低點之間的「最終下跌幅度」
-            if breakdown_events and breakdown_events[-1].get("end_idx") is None:
+            if breakdown_events and breakdown_events[-1].get("end_idx") is None and pivot_idx >= breakdown_events[-1]["idx"]:
                 last_brk = breakdown_events[-1]
                 b_idx = last_brk["idx"]
                 seg_lows = lows[b_idx: pivot_idx + 1]
@@ -710,33 +648,28 @@ def calc_relative_strength(stock_df, benchmark_df, days=60):
     return float((stock_ret - bench_ret) * 100)
 
 
-@st.cache_data(ttl=OHLCV_TTL)
+@st.cache_data(ttl=OHLCV_TTL,show_spinner=False)
 def fetch_macro():
-    result = {}
-    for name, ticker in MACRO_TICKERS.items():
-        df = fetch_ohlcv(ticker, period="1y")
-        if df is None or len(df) < 15:
+    result={}
+    frames=fetch_multiple(list(MACRO_TICKERS.values()),period="1y")
+    for name,ticker in MACRO_TICKERS.items():
+        target=completed_session("HK" if name in {"HSI","VHSI"} else "US")
+        df=trim_completed(frames.get(ticker),target)
+        if df is None or len(df)<15 or str(df.index[-1].date())!=target:
             continue
-        close = safe_float(df["close"].iloc[-1])
-        prev = safe_float(df["close"].iloc[-2], close)
-        high = safe_float(df["high"].max(), close)
-        low = safe_float(df["low"].min(), close)
-        ret10 = (close / safe_float(df["close"].iloc[-10], close) - 1) * 100
-        result[name] = {
-            "val": close,
-            "chg": (close / prev - 1) * 100 if prev else 0,
-            "pct": (close - low) / (high - low) * 100 if high > low else 50,
-            "ret_10d": ret10,
-            "last_bar": str(pd.Timestamp(df.index[-1]).date())
-        }
+        close=safe_float(df["close"].iloc[-1])
+        previous=safe_float(df["close"].iloc[-2])
+        high,low=safe_float(df["high"].max()),safe_float(df["low"].min())
+        result[name]={"val":close,"chg":(close/previous-1)*100 if previous>0 else np.nan,
+                      "pct":(close-low)/(high-low)*100 if high>low else 50,
+                      "ret_10d":(close/df["close"].iloc[-10]-1)*100,"last_bar":target}
     return result
 
 
 def classify_market_state(market, macro_data):
     benchmark = "^HSI" if market == "🇭🇰 港股" else "SPY"
     vol_key = "VHSI" if market == "🇭🇰 港股" else "VIX"
-    df = fetch_ohlcv(benchmark, period="1y")
-    df = trim_completed(df, completed_session("HK" if market == "🇭🇰 港股" else "US"))
+    df = trim_completed(fetch_ohlcv(benchmark, period="1y"),completed_session("HK" if market=="🇭🇰 港股" else "US"))
     if df is None or len(df) < 205:
         return {"name": "unknown", "benchmark": benchmark, "return_60d": 0.0, "vol": 0.0, "vol_index": np.nan}
     close = df["close"]
@@ -867,15 +800,16 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     val_score, val_detail = valuation_score(info, sector)
     val_score = clip_score(val_score * quality_penalty)
     undervaluation = classify_undervaluation(val_score, quality_blockers)
-    valuation_available = any(np.isfinite(safe_float(info.get(k))) and safe_float(info.get(k)) > 0 for k in ("pe", "pb"))
+    valuation_available=any(np.isfinite(safe_float(info.get(k))) and safe_float(info.get(k))>0 for k in ("pe","pb"))
     if not valuation_available:
-        undervaluation = "⚪ 估值資料不足"
+        undervaluation="⚪ 估值資料不足"
+    val_detail += f"；PE口徑：{info.get('pe_basis','未知')}"
 
     liquidity_20d = safe_float((df["close"] * df["volume"]).rolling(20).mean().iloc[-1], 0)
     eligibility = []
     blockers = list(quality_blockers) if ticker not in ETF_TICKERS else []
     if not valuation_available:
-        blockers.append("PE/PB有效資料不足，不能以中性分視作低估")
+        blockers.append("有效PE/PB資料不足，不能以中性分視作低估")
     if price <= 0:
         blockers.append("現價無效")
     if liquidity_20d <= 0:
@@ -1030,12 +964,12 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
 def save_snapshot_and_signal(result):
     payload = pd.Series(result).to_json(force_ascii=False)
     today = result["last_bar"]
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     conn.execute(
         "INSERT OR REPLACE INTO scan_snapshots (snapshot_date,ticker,model_version,payload_json,created_at) VALUES (?,?,?,?,?)",
         (today, result["ticker"], MODEL_VERSION, payload, hkt_now().isoformat())
     )
-    if result["decision"] == "可小量試倉" and result.get("formal_signal_eligible", True):
+    if result["decision"] == "可小量試倉" and result.get("formal_signal_eligible",False):
         conn.execute(
             "INSERT OR IGNORE INTO signals (signal_date,ticker,model_version,decision,total_score,price,confirmation_price,stop_loss,target_2r,market_regime,sector,features_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (today, result["ticker"], MODEL_VERSION, result["decision"], result["final_score"], result["price"],
@@ -1122,375 +1056,431 @@ def render_metrics(macro_data, regime):
         cols = st.columns(4)
         for col, (key, label) in zip(cols, group):
             item = macro_data.get(key, {})
-            value = safe_float(item.get("val"), 0)
-            change = safe_float(item.get("chg"), 0)
-            col.metric(label, f"{value:.2f}", f"{change:+.2f}%")
+            value = safe_float(item.get("val"))
+            change = safe_float(item.get("chg"))
+            col.metric(label, f"{value:.2f}" if np.isfinite(value) else "N/A", f"{change:+.2f}%" if np.isfinite(change) else None)
     st.caption(f"本市場 Regime：{regime['name']}｜基準：{regime['benchmark']}｜60日回報：{regime['return_60d']:.1f}%｜年化波動：{regime['vol']:.1f}%")
 
 
 
-# ==================== V4.7 自動股票池 ====================
+# ==================== Yahoo獨立版：交易日／自動股票池 ====================
 INDEX_SPECS = {
-    "DJIA": ("道指", "US", "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average", 30, 30),
-    "NDX": ("納斯達克100", "US", "https://en.wikipedia.org/wiki/Nasdaq-100", 95, 115),
-    "SP500": ("標普500", "US", "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", 490, 520),
-    "HSI": ("恒生指數", "HK", "https://en.wikipedia.org/wiki/Hang_Seng_Index", 50, 150),
+    "DJIA": {"name":"道瓊工業指數", "market":"US", "url":"https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average", "min":30, "max":30},
+    "NDX": {"name":"納斯達克100", "market":"US", "url":"https://en.wikipedia.org/wiki/Nasdaq-100", "min":95, "max":115},
+    "SP500": {"name":"標普500", "market":"US", "url":"https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "min":490, "max":520},
+    "HSI": {"name":"恒生指數", "market":"HK", "url":"https://en.wikipedia.org/wiki/Hang_Seng_Index", "min":50, "max":150},
 }
 
-def init_pool_db():
-    with sqlite3.connect(DB_FILE, timeout=30) as conn:
+
+def clean_price_frame(frame):
+    if frame is None or frame.empty:
+        return None
+    frame=frame.copy()
+    if isinstance(frame.columns,pd.MultiIndex):
+        frame.columns=frame.columns.get_level_values(0)
+    frame.columns=[str(x).lower() for x in frame.columns]
+    required=["open","high","low","close","volume"]
+    if not set(required).issubset(frame.columns):
+        return None
+    frame=frame[required].apply(pd.to_numeric,errors="coerce")
+    idx=pd.DatetimeIndex(pd.to_datetime(frame.index))
+    frame.index=idx.tz_localize(None).normalize() if idx.tz is not None else idx.normalize()
+    frame=frame[~frame.index.duplicated(keep="last")].sort_index()
+    frame=frame.replace([np.inf,-np.inf],np.nan).dropna(subset=required)
+    frame=frame[(frame["close"]>0)&(frame["open"]>0)&(frame["volume"]>=0)]
+    return frame if not frame.empty else None
+
+
+def extract_download(raw, symbols):
+    frames={}
+    if raw is None or raw.empty:
+        return frames
+    for ticker in symbols:
+        try:
+            if isinstance(raw.columns,pd.MultiIndex):
+                if ticker in raw.columns.get_level_values(0):
+                    frame=raw[ticker]
+                elif ticker in raw.columns.get_level_values(1):
+                    frame=raw.xs(ticker,axis=1,level=1)
+                else:
+                    continue
+            elif len(symbols)==1:
+                frame=raw
+            else:
+                continue
+            frame=clean_price_frame(frame)
+            if frame is not None:
+                frames[ticker]=frame
+        except (KeyError,ValueError,TypeError):
+            continue
+    return frames
+
+
+@st.cache_data(ttl=OHLCV_TTL,show_spinner=False)
+def download_analysis_batch(symbols,period):
+    raw=yf.download(list(symbols),period=period,interval="1d",group_by="ticker",
+                    auto_adjust=True,threads=3,progress=False,timeout=15)
+    return extract_download(raw,symbols)
+
+
+@st.cache_data(ttl=300,show_spinner=False)
+def calendar_info(market_code):
+    try:
+        import exchange_calendars as xcals
+    except Exception as exc:
+        return {"date":None,"verified":False,"error":f"交易日曆不可用：{type(exc).__name__}: {str(exc)[:160]}。請同步更新requirements.txt並重新部署。"}
+    try:
+        return calendar_session(market_code,xcals,datetime.now(ZoneInfo("UTC")))
+    except Exception as exc:
+        return {"date":None,"verified":False,"error":f"交易日判斷失敗：{str(exc)[:160]}；停止正式排名，沒有用普通工作日猜測。"}
+
+
+def calendar_session(market_code,xcals,now):
+    now=pd.Timestamp(now)
+    now=now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
+    calendar=xcals.get_calendar("XHKG" if market_code=="HK" else "XNYS")
+    schedule=calendar.schedule.loc[(now-pd.Timedelta(days=35)).strftime("%Y-%m-%d"):now.strftime("%Y-%m-%d")]
+    close_col="close" if "close" in schedule.columns else "market_close"
+    closes=pd.to_datetime(schedule[close_col],utc=True)
+    eligible=schedule.index[closes+pd.Timedelta(minutes=15)<=now]
+    if len(eligible)==0:
+        raise ValueError("沒有已完成交易日")
+    return {"date":str(pd.Timestamp(eligible[-1]).date()),"verified":True,
+            "error":None,"calendar":"XHKG" if market_code=="HK" else "XNYS","buffer_minutes":15}
+
+
+def completed_session(market_code):
+    return calendar_info(market_code)["date"]
+
+
+def trim_completed(frame,target):
+    frame=clean_price_frame(frame)
+    if frame is None or target is None:
+        return None
+    return frame.loc[frame.index<=pd.Timestamp(target)].copy()
+
+
+def init_auto_db():
+    with sqlite3.connect(DB_FILE,timeout=30) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE TABLE IF NOT EXISTS auto_pool_state (state_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS auto_pool_history (index_key TEXT, market_date TEXT, payload TEXT, updated_at TEXT, PRIMARY KEY(index_key,market_date))")
-        conn.execute("CREATE TABLE IF NOT EXISTS permanent_watchlist (ticker TEXT PRIMARY KEY, source TEXT NOT NULL, added_at TEXT NOT NULL)")
-        seeds = [(t, "原有永久名單", hkt_now().isoformat()) for t in HK_WATCHLIST + US_WATCHLIST]
-        conn.executemany("INSERT OR IGNORE INTO permanent_watchlist VALUES (?,?,?)", seeds)
+        conn.execute("CREATE TABLE IF NOT EXISTS auto_pool_state (state_key TEXT PRIMARY KEY,payload TEXT NOT NULL,updated_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS auto_pool_history (index_key TEXT,market_date TEXT,payload TEXT,updated_at TEXT,PRIMARY KEY(index_key,market_date))")
+        conn.execute("CREATE TABLE IF NOT EXISTS permanent_watchlist (ticker TEXT PRIMARY KEY,source TEXT NOT NULL,added_at TEXT NOT NULL)")
+        conn.executemany("INSERT OR IGNORE INTO permanent_watchlist VALUES (?,?,?)",
+                         [(t,"原有永久名單",hkt_now().isoformat()) for t in HK_WATCHLIST+US_WATCHLIST])
 
 
 def state_get(key):
-    with sqlite3.connect(DB_FILE, timeout=30) as conn:
-        row = conn.execute("SELECT payload FROM auto_pool_state WHERE state_key=?", (key,)).fetchone()
+    with sqlite3.connect(DB_FILE,timeout=30) as conn:
+        row=conn.execute("SELECT payload FROM auto_pool_state WHERE state_key=?",(key,)).fetchone()
     return json.loads(row[0]) if row else None
 
 
-def state_put(key, payload):
-    with sqlite3.connect(DB_FILE, timeout=30) as conn:
-        conn.execute("INSERT OR REPLACE INTO auto_pool_state VALUES (?,?,?)", (key, json.dumps(payload, ensure_ascii=False, allow_nan=False), hkt_now().isoformat()))
+def state_put(key,payload):
+    with sqlite3.connect(DB_FILE,timeout=30) as conn:
+        conn.execute("INSERT OR REPLACE INTO auto_pool_state VALUES (?,?,?)",
+                      (key,json.dumps(payload,ensure_ascii=False,allow_nan=False),hkt_now().isoformat()))
 
 
 def permanent_tickers():
-    with sqlite3.connect(DB_FILE, timeout=30) as conn:
-        return [x[0] for x in conn.execute("SELECT ticker FROM permanent_watchlist ORDER BY ticker")]
+    with sqlite3.connect(DB_FILE,timeout=30) as conn:
+        return [row[0] for row in conn.execute("SELECT ticker FROM permanent_watchlist ORDER BY ticker")]
 
 
-def normalize_ticker(value, hk=False):
-    value = re.sub(r"\[[^\]]*\]", "", str(value)).strip()
-    if hk:
-        match = re.fullmatch(r"(?:SEHK\s*:\s*|HKG\s*:\s*)?(\d{1,5})(?:\.HK)?", value, re.I)
-        return str(int(match[1])).zfill(4) + ".HK" if match else None
-    value = value.upper().replace(".", "-")
-    return value if re.fullmatch(r"[A-Z]{1,6}(?:-[A-Z])?", value) else None
-
-
-def parse_constituents(tables, index_key):
-    spec = INDEX_SPECS[index_key]
-    candidates = []
-    for table in tables:
-        df = table.copy()
-        df.columns = [" ".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in df.columns]
-        for col in df.columns:
-            if col.lower().strip() not in {"symbol", "ticker", "ticker symbol"}:
-                continue
-            symbols = sorted({s for value in df[col] if (s := normalize_ticker(value, spec[1] == "HK"))})
-            if spec[3] <= len(symbols) <= spec[4]:
-                candidates.append(symbols)
-    if len(candidates) != 1:
-        raise ValueError(f"{index_key} 成分表驗證失敗：找到 {len(candidates)} 個合格表格；未使用固定熱門股替代")
-    return candidates[0]
-
-
-@st.cache_data(ttl=21600, show_spinner=False)
-def fetch_constituents(index_key):
-    url = INDEX_SPECS[index_key][2]
-    response = requests.get(url, timeout=30, headers={"User-Agent": "StockMonitor/4.7 (personal research; constituent table reader)"})
-    response.raise_for_status()
-    symbols = parse_constituents(pd.read_html(StringIO(response.text)), index_key)
-    return {"symbols": symbols, "source": url, "fetched_at": hkt_now().isoformat(), "effective_date_verified": False}
-
-
-def completed_session(market_code, now=None):
-    import exchange_calendars as xcals
-    now = pd.Timestamp(now or datetime.now(ZoneInfo("UTC")))
-    now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
-    calendar = xcals.get_calendar("XHKG" if market_code == "HK" else "XNYS")
-    schedule = calendar.schedule.loc[(now - pd.Timedelta(days=35)).strftime("%Y-%m-%d"):now.strftime("%Y-%m-%d")]
-    close_col = "close" if "close" in schedule.columns else "market_close"
-    closes = pd.to_datetime(schedule[close_col], utc=True)
-    # 收市後額外等候15分鐘，涵蓋收市競價及供應商更新緩衝。
-    eligible = schedule.index[closes + pd.Timedelta(minutes=15) <= now]
-    if len(eligible) == 0:
-        raise ValueError("交易日曆找不到已完成交易日；停止排名，不以星期一至五猜測")
-    return str(pd.Timestamp(eligible[-1]).date())
-
-
-def normalize_daily_frame(df):
-    if df is None or df.empty:
+def normalize_symbol(value,hk=False):
+    if pd.isna(value):
         return None
-    df = df.copy()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df.columns = [str(c).lower() for c in df.columns]
-    idx = pd.DatetimeIndex(pd.to_datetime(df.index))
-    df.index = idx.tz_localize(None).normalize() if idx.tz is not None else idx.normalize()
-    return df[~df.index.duplicated(keep="last")].sort_index()
+    text=re.sub(r"\[[^\]]*\]","",str(value)).strip()
+    if hk:
+        text=re.sub(r"^(?:SEHK|HKG|HKEX)\s*:\s*","",text,flags=re.I)
+        text=re.sub(r"\.HK$","",text,flags=re.I)
+        if re.fullmatch(r"\d{1,5}\.0",text):
+            text=text[:-2]
+        return str(int(text)).zfill(4)+".HK" if re.fullmatch(r"\d{1,5}",text) and int(text)>0 else None
+    text=text.upper().replace(".","-")
+    return text if re.fullmatch(r"[A-Z]{1,6}(?:-[A-Z])?",text) else None
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_rank_prices(symbols, market_date):
-    output = {}
-    target = pd.Timestamp(market_date)
-    start = (target - pd.Timedelta(days=12)).strftime("%Y-%m-%d")
-    end = (target + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    for offset in range(0, len(symbols), 80):
-        chunk = list(symbols[offset:offset+80])
-        raw = None
-        for attempt in range(2):
-            try:
-                raw = yf.download(chunk, start=start, end=end, interval="1d", auto_adjust=False,
-                                  group_by="ticker", threads=3, progress=False)
-                break
-            except Exception as exc:
-                if attempt == 1:
-                    add_error("批量排名區塊失敗；計入缺失而非冒充完整", exc=exc)
-                else:
-                    time.sleep(1)
-        if raw is None or raw.empty:
-            continue
-        for ticker in chunk:
-            try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    if ticker in raw.columns.get_level_values(0):
-                        frame = raw[ticker]
-                    else:
-                        frame = raw.xs(ticker, axis=1, level=1)
-                else:
-                    frame = raw if len(chunk) == 1 else None
-                frame = normalize_daily_frame(frame)
-                if frame is not None and target in frame.index:
-                    row = frame.loc[target]
-                    close, vol = safe_float(row.get("close")), safe_float(row.get("volume"))
-                    if np.isfinite(close) and close > 0 and np.isfinite(vol) and vol > 0:
-                        output[ticker] = {"estimate": float(close * vol), "price_date": market_date}
-            except (KeyError, ValueError, TypeError):
+def parse_constituents(tables,key):
+    spec=INDEX_SPECS[key]
+    choices=[]
+    for table in tables:
+        frame=table.copy()
+        frame.columns=[" ".join(map(str,c)) if isinstance(c,tuple) else str(c) for c in frame.columns]
+        for column in frame.columns:
+            normalized=re.sub(r"\[[^\]]*\]","",column).strip().lower()
+            if normalized not in {"symbol","ticker","ticker symbol"}:
                 continue
-    return output
+            symbols=sorted({t for v in frame[column] if (t:=normalize_symbol(v,spec["market"]=="HK"))})
+            if spec["min"]<=len(symbols)<=spec["max"]:
+                choices.append(symbols)
+    # 相同表重覆出現可去重；不同合格表不可自行猜測。
+    choices=list({tuple(x):x for x in choices}.values())
+    if len(choices)!=1:
+        raise ValueError(f"{key}成分表驗證失敗：找到{len(choices)}個合格表。沒有以固定熱門股替代。")
+    return choices[0]
 
 
-def snapshot_turnovers(symbols, market_date):
-    output = {}
-    if not quote_ctx:
-        return output
-    for offset in range(0, len(symbols), 300):
-        chunk = list(symbols[offset:offset+300])
-        reverse = {to_futu(t): t for t in chunk}
-        try:
-            with FUTU_LOCK:
-                ret, frame = quote_ctx.get_market_snapshot(list(reverse))
-            if ret != RET_OK or frame is None:
-                continue
-            for _, row in frame.iterrows():
-                ticker = reverse.get(row.get("code"))
-                amount = safe_float(row.get("turnover"))
-                update = str(row.get("update_time", ""))[:10]
-                if ticker and update == market_date and np.isfinite(amount) and amount > 0:
-                    output[ticker] = {"amount": float(amount), "price_date": update}
-        except Exception as exc:
-            add_error("成交額快照不可用，改用明確標示的估算額", exc=exc)
-    return output
+@st.cache_data(ttl=21600,show_spinner=False)
+def fetch_constituents(key):
+    url=INDEX_SPECS[key]["url"]
+    response=requests.get(url,headers={"User-Agent":"Mozilla/5.0 (compatible; StockMonitorResearch/4.7.2)","Accept":"text/html"},timeout=(8,20))
+    response.raise_for_status()
+    symbols=parse_constituents(pd.read_html(StringIO(response.text)),key)
+    return {"symbols":symbols,"source":url,"fetched_at":hkt_now().isoformat(),"official_effective_date_verified":False}
 
 
-def select_rank(symbols, estimates, actuals, market_date):
-    complete_actual = all(t in actuals and actuals[t]["price_date"] == market_date for t in symbols)
-    method = "實際成交額（富途快照）" if complete_actual else "估算成交額（未復權收市價×成交量）"
-    rows = []
+@st.cache_data(ttl=900,show_spinner=False)
+def download_rank_batch(symbols,target):
+    target=pd.Timestamp(target)
+    raw=yf.download(list(symbols),start=(target-pd.Timedelta(days=10)).strftime("%Y-%m-%d"),
+                    end=(target+pd.Timedelta(days=1)).strftime("%Y-%m-%d"),interval="1d",
+                    auto_adjust=False,group_by="ticker",threads=3,progress=False,timeout=15)
+    return extract_download(raw,symbols)
+
+
+def rank_candidates(symbols,frames,target):
+    rows=[]
+    date=pd.Timestamp(target)
     for ticker in symbols:
-        if complete_actual:
-            amount = actuals[ticker]["amount"]
-        elif ticker in estimates and estimates[ticker]["price_date"] == market_date:
-            amount = estimates[ticker]["estimate"]
-        else:
+        frame=frames.get(ticker)
+        if frame is None or date not in frame.index:
             continue
-        rows.append({"ticker": ticker, "amount": amount})
-    rows.sort(key=lambda x: (-x["amount"], x["ticker"]))
-    top = [dict(row, rank=i+1) for i, row in enumerate(rows[:30])]
-    return {"market_date": market_date, "expected": len(symbols), "available": len(rows),
-            "complete": len(rows) == len(symbols), "method": method, "top": top}
+        row=frame.loc[date]
+        price,vol=safe_float(row.get("close")),safe_float(row.get("volume"))
+        if np.isfinite(price) and price>0 and np.isfinite(vol) and vol>0:
+            rows.append({"ticker":ticker,"estimated_turnover":float(price*vol)})
+    rows.sort(key=lambda r:(-r["estimated_turnover"],r["ticker"]))
+    return {"market_date":target,"expected":len(symbols),"available":len(rows),
+            "complete":bool(symbols) and len(rows)==len(symbols),
+            "method":"估算成交額：未復權收市價×成交量（Yahoo）",
+            "top":[dict(row,rank=i+1) for i,row in enumerate(rows[:30])]}
 
 
-def build_auto_pools(index_keys, progress=None):
-    dates, constituents, errors = {}, {}, []
-    for key in index_keys:
+def build_auto_pools(keys,status):
+    dates,lists,errors,frames={},{},[],{}
+    for key in keys:
         try:
-            dates[key] = completed_session(INDEX_SPECS[key][1])
-            constituents[key] = fetch_constituents(key)
-            state_put("constituents:"+key, constituents[key])
+            info=calendar_info(INDEX_SPECS[key]["market"])
+            if not info["verified"] or not info["date"]:
+                raise ValueError(info["error"])
+            dates[key]=info["date"]
+            status.text(f"讀取{INDEX_SPECS[key]['name']}成分表…")
+            lists[key]=fetch_constituents(key)
         except Exception as exc:
-            errors.append(f"{key}: {exc}")
-    quotes, actuals = {}, {}
+            errors.append(f"{key}更新失敗：{type(exc).__name__}: {str(exc)[:200]}")
     for date in sorted(set(dates.values())):
-        syms = tuple(sorted({t for k, c in constituents.items() if dates.get(k) == date for t in c["symbols"]}))
-        if not syms:
-            continue
-        if progress:
-            progress.text(f"批量取得 {date} 的成交資料：{len(syms)} 個成分股…")
-        try:
-            quotes[date] = fetch_rank_prices(syms, date)
-        except Exception as exc:
-            errors.append(f"{date} 排名價格下載失敗：{exc}")
-            quotes[date] = {}
-        actuals[date] = snapshot_turnovers(syms, date)
-    pools = []
-    for key in index_keys:
-        rank = None
-        if key in constituents and key in dates:
-            rank = select_rank(constituents[key]["symbols"], quotes.get(dates[key], {}), actuals.get(dates[key], {}), dates[key])
-            rank.update({"index_key": key, "market": INDEX_SPECS[key][1],
-                         "constituent_source": constituents[key]["source"],
-                         "constituents_fetched_at": constituents[key]["fetched_at"],
-                         "effective_date_verified": False, "generated_at": hkt_now().isoformat()})
+        symbols=sorted({t for k,info in lists.items() if dates.get(k)==date for t in info["symbols"]})
+        bucket={}
+        for start in range(0,len(symbols),60):
+            chunk=tuple(symbols[start:start+60])
+            status.text(f"下載{date}排名行情 {min(start+60,len(symbols))}/{len(symbols)}…")
+            try:
+                bucket.update(download_rank_batch(chunk,date))
+            except Exception as exc:
+                errors.append(f"{date}排名區塊下載失敗：{type(exc).__name__}: {str(exc)[:140]}")
+        frames[date]=bucket
+    pools=[]
+    for key in keys:
+        rank=None
+        if key in lists:
+            rank=rank_candidates(lists[key]["symbols"],frames.get(dates[key],{}),dates[key])
+            rank.update({"index_key":key,"market":INDEX_SPECS[key]["market"],"source":lists[key]["source"],
+                         "constituents_fetched_at":lists[key]["fetched_at"],"generated_at":hkt_now().isoformat(),
+                         "official_effective_date_verified":False,"fallback":False})
         if rank and rank["complete"]:
-            rank["status"] = "完整覆蓋；成分生效日未經官方核實"
-            rank["fallback"] = False
-            state_put("ranking:"+key, rank)
-            with sqlite3.connect(DB_FILE, timeout=30) as conn:
-                conn.execute("INSERT OR REPLACE INTO auto_pool_history VALUES (?,?,?,?)", (key, rank["market_date"], json.dumps(rank, ensure_ascii=False), hkt_now().isoformat()))
+            rank["status"]="完整行情覆蓋／估算榜；官方成分生效日未核實"
+            state_put("yahoo_ranking:"+key,rank)
+            with sqlite3.connect(DB_FILE,timeout=30) as conn:
+                conn.execute("INSERT OR REPLACE INTO auto_pool_history VALUES (?,?,?,?)",
+                             ("YAHOO:"+key,rank["market_date"],json.dumps(rank,ensure_ascii=False),hkt_now().isoformat()))
         else:
-            previous = state_get("ranking:"+key)
+            previous=state_get("yahoo_ranking:"+key)
             if previous:
-                previous.update({"fallback": True, "status": "回退：上一份完整榜單（不是本次更新）",
-                                 "requested_date": dates.get(key), "current_available": rank["available"] if rank else 0})
-                rank = previous
+                rank=previous
+                rank.update({"fallback":True,"status":"回退：上一份完整估算榜，並非本次更新",
+                             "requested_date":dates.get(key),"current_available":len([t for t in lists.get(key,{}).get("symbols",[]) if t in frames.get(dates.get(key),{})])})
             elif rank:
-                rank.update({"fallback": False, "status": "不完整排名：只供參考，不作完整Top30"})
+                rank["status"]="不完整估算榜，只供研究；不是完整Top30"
             else:
-                rank = {"index_key": key, "market": INDEX_SPECS[key][1], "market_date": dates.get(key, "未知"),
-                        "expected": 0, "available": 0, "complete": False, "method": "無可用資料", "top": [],
-                        "fallback": False, "status": "成分或行情更新失敗；沒有固定熱門股替代"}
+                rank={"index_key":key,"market":INDEX_SPECS[key]["market"],"market_date":dates.get(key),
+                      "expected":0,"available":0,"complete":False,"top":[],"fallback":False,
+                      "method":"無可用排名","status":"更新失敗且沒有已保存榜單"}
         pools.append(rank)
-    return pools, errors
+    return pools,errors
 
 
-def run_decision_scan(tickers, pools, progress):
-    meta = {}
+def combine_scan_universe(pools,core,market):
+    symbols={r["ticker"] for p in pools for r in p["top"]}
+    if market=="🇭🇰 港股":
+        core=[t for t in core if t.endswith(".HK")]
+    elif market=="🇺🇸 美股":
+        core=[t for t in core if not t.endswith(".HK")]
+    return sorted(symbols|set(core))
+
+
+def get_scan_metadata(pools):
+    metadata={}
     for pool in pools:
         for row in pool["top"]:
-            meta.setdefault(row["ticker"], []).append({"index": pool["index_key"], "rank": row["rank"],
-                "amount": row["amount"], "currency": "HKD" if pool["market"] == "HK" else "USD",
-                "ranking_date": pool["market_date"], "method": pool["method"],
-                "ranking_complete": pool["complete"], "fallback": pool["fallback"]})
-    contexts = {}
-    for code in sorted({"HK" if t.endswith(".HK") or t == "^HSI" else "US" for t in tickers}):
-        label = "🇭🇰 港股" if code == "HK" else "🇺🇸 美股"
-        target = completed_session(code)
-        regime_local = classify_market_state(label, fetch_macro())
-        benchmark = fetch_ohlcv(regime_local["benchmark"], "2y")
-        benchmark = trim_completed(benchmark, target)
-        contexts[code] = (target, regime_local, benchmark)
-    results, errors, infos = [], [], {}
-    core_set = set(permanent_tickers())
-    progress.progress(10, text="下載入選股票基本面（保留基本面快取）…")
+            metadata.setdefault(row["ticker"],[]).append({"index":pool["index_key"],"rank":row["rank"],
+                "estimated_turnover":row["estimated_turnover"],"ranking_date":pool["market_date"],
+                "currency":"HKD" if pool["market"]=="HK" else "USD","complete":pool["complete"],"fallback":pool["fallback"]})
+    return metadata
+
+
+def scan_universe(tickers,pools,progress,custom=False):
+    results,errors,info_map=[],[],{}
+    metadata=get_scan_metadata(pools)
+    core=set(permanent_tickers())
+    market_codes=sorted({"HK" if t.endswith(".HK") or t=="^HSI" else "US" for t in tickers})
+    if not any(completed_session(m) for m in market_codes):
+        return [],["交易日曆不可用：請更新requirements.txt並重新部署；本次未下載行情或產生正式訊號。"]
+    macro=fetch_macro()
+    st.session_state["macro_data"]=macro
+    contexts={}
+    for market_code in market_codes:
+        target=completed_session(market_code)
+        if not target:
+            errors.append(f"{market_code}：交易日曆不可用；暫停本市場正式掃描，技術圖仍可手動載入。")
+            continue
+        label="🇭🇰 港股" if market_code=="HK" else "🇺🇸 美股"
+        local_regime=classify_market_state(label,macro)
+        benchmark=trim_completed(fetch_ohlcv(local_regime["benchmark"],"2y"),target)
+        if benchmark is None or benchmark.empty or str(benchmark.index[-1].date())!=target:
+            errors.append(f"{market_code}：缺少{target}基準日線；暫停本市場。")
+            continue
+        if local_regime["name"]=="unknown":
+            errors.append(f"{market_code}：市場狀態資料不足；暫停正式掃描。")
+            continue
+        contexts[market_code]=(target,local_regime,benchmark)
+    tickers=[t for t in tickers if ("HK" if t.endswith(".HK") or t=="^HSI" else "US") in contexts]
+    if not tickers:
+        return results,errors
+    progress.progress(15,text=f"取得{len(tickers)}隻入選股票基本面…")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS_DATA) as executor:
-        futures = {executor.submit(get_full_stock_info, t): t for t in tickers}
-        for future in as_completed(futures):
-            ticker = futures[future]
+        futures={executor.submit(get_full_stock_info,t):t for t in tickers}
+        for i,future in enumerate(as_completed(futures),1):
+            ticker=futures[future]
             try:
-                infos[ticker] = future.result()
+                info_map[ticker]=future.result()
+                if info_map[ticker].get("info_error"):
+                    errors.append(f"{ticker}基本面：{info_map[ticker]['info_error']}")
             except Exception as exc:
-                errors.append(f"{ticker} 基本面：{exc}")
-    progress.progress(35, text="下載入選股日線…")
-    data = fetch_multiple(tickers, period="2y")
-    for i, ticker in enumerate(tickers):
-        code = "HK" if ticker.endswith(".HK") or ticker == "^HSI" else "US"
-        target, regime_local, benchmark = contexts[code]
+                errors.append(f"{ticker}基本面：{type(exc).__name__}: {str(exc)[:150]}")
+            progress.progress(15+int(i/len(tickers)*30),text=f"基本面 {i}/{len(tickers)}；缺失不當作低估")
+    prices={}
+    for start in range(0,len(tickers),40):
+        chunk=tickers[start:start+40]
+        progress.progress(45,text=f"下載兩年日線 {min(start+40,len(tickers))}/{len(tickers)}…")
+        prices.update(fetch_multiple(chunk,"2y"))
+    for i,ticker in enumerate(tickers):
+        market_code="HK" if ticker.endswith(".HK") or ticker=="^HSI" else "US"
+        target,local_regime,benchmark=contexts[market_code]
         try:
-            frame = trim_completed(data.get(ticker), target)
-            if frame is None or frame.empty or str(frame.index[-1].date()) != target:
-                raise ValueError(f"缺少最新完整交易日 {target} 日線；不產生舊資料新訊號")
-            if benchmark is None or benchmark.empty or str(benchmark.index[-1].date()) != target:
-                raise ValueError("基準價格未更新，暫停本市場訊號")
-            result = decision_engine(ticker, frame, infos.get(ticker, {}), regime_local, benchmark)
+            frame=trim_completed(prices.get(ticker),target)
+            if frame is None or frame.empty or str(frame.index[-1].date())!=target:
+                raise ValueError(f"缺少{target}個股日線，不以舊資料產生新訊號")
+            result=decision_engine(ticker,frame,info_map.get(ticker,{}),local_regime,benchmark)
             if result is None:
                 raise ValueError("歷史不足210根日線")
-            result.update({"market": code, "scanned_at": hkt_now().isoformat(),
-                           "pool_memberships": meta.get(ticker, []),
-                           "pool_sources": " / ".join(f"{x['index']} #{x['rank']} ({x['ranking_date']})" for x in meta.get(ticker, [])) or "永久／自選名單"})
-            memberships = meta.get(ticker, [])
-            current_pool_ok = any(x["ranking_complete"] and not x["fallback"] and x["ranking_date"] == target for x in memberships)
-            result["formal_signal_eligible"] = current_pool_ok or ticker in core_set or not pools
+            entries=metadata.get(ticker,[])
+            formal=custom or ticker in core or any(x["complete"] and not x["fallback"] and x["ranking_date"]==target for x in entries)
+            result.update({"market":market_code,"data_source":"Yahoo Finance","scanned_at":hkt_now().isoformat(),
+                "pool_memberships":entries,"formal_signal_eligible":bool(formal),
+                "pool_sources":" / ".join(f"{x['index']} #{x['rank']} ({x['ranking_date']})" for x in entries) or "永久／自選名單"})
             save_snapshot_and_signal(result)
             results.append(result)
         except Exception as exc:
-            errors.append(f"{ticker}: {exc}")
-        progress.progress(35 + int((i+1)/max(1,len(tickers))*65), text=f"決策分析 {i+1}/{len(tickers)}")
-    return results, errors
-
-
-def trim_completed(frame, target):
-    frame = normalize_daily_frame(frame)
-    return frame.loc[frame.index <= pd.Timestamp(target)].copy() if frame is not None else None
+            errors.append(f"{ticker}：{type(exc).__name__}: {str(exc)[:180]}")
+        progress.progress(45+int((i+1)/len(tickers)*55),text=f"模型分析 {i+1}/{len(tickers)}")
+    return results,errors
 
 
 def render_pool_report(pools):
     if not pools:
         return
-    report = [{"指數": p["index_key"], "交易日": p["market_date"], "預期成分": p["expected"],
-               "有效行情": p["available"], "缺失": p["expected"]-p["available"], "計算方法": p["method"], "本次要求日期": p.get("requested_date", p["market_date"]), "本次有效行情": p.get("current_available", p["available"]), "狀態": p["status"]} for p in pools]
-    st.dataframe(pd.DataFrame(report), hide_index=True, use_container_width=True)
-    st.caption("成分來源：Wikipedia 公開表格，非官方授權成分服務；抓取時間不等於成分生效日。完整覆蓋只指該次取得的成分表，不保證官方成分及生效日已核實。估算額不等於逐筆成交金額加總。")
-    with st.expander("各指數Top30、幣種、資料時間與成分來源"):
+    rows=[{"指數":p["index_key"],"榜單交易日":p["market_date"],"預期成分":p["expected"],
+           "有效行情":p["available"],"缺失":p["expected"]-p["available"],"計算方法":p["method"],
+           "本次要求日期":p.get("requested_date",p["market_date"]),"狀態":p["status"]} for p in pools]
+    st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+    st.caption("全部榜單均為估算成交額，不是交易所正式成交額榜。成分表來自Wikipedia，官方生效日未核實；完整只表示當次成分表行情覆蓋。")
+    with st.expander("查看各指數Top30、來源及抓取時間"):
         for pool in pools:
-            st.write(f"{pool['index_key']}｜{pool['market_date']}｜{pool['method']}｜{pool['status']}")
-            st.caption(f"成分來源：{pool.get('constituent_source', '不可用')}｜抓取：{pool.get('constituents_fetched_at','未知')}")
+            st.write(f"{pool['index_key']}｜{pool['market_date']}｜{pool['status']}")
+            st.caption(f"來源：{pool.get('source','不可用')}｜成分抓取時間：{pool.get('constituents_fetched_at','未知')}")
             if pool["top"]:
-                frame = pd.DataFrame(pool["top"])
-                frame["currency"] = "HKD" if pool["market"] == "HK" else "USD"
-                st.dataframe(frame, hide_index=True, use_container_width=True)
+                frame=pd.DataFrame(pool["top"])
+                frame["currency"]="HKD" if pool["market"]=="HK" else "USD"
+                st.dataframe(frame,hide_index=True,use_container_width=True)
 
 
-init_pool_db()
+try:
+    init_auto_db()
+except Exception as exc:
+    st.error(f"自動股票池資料庫初始化失敗：{exc}。請先備份資料庫，再檢查權限與schema。")
+    st.stop()
 
 
-elapsed = time.time() - st.session_state.last_refresh
-remaining = max(0, AUTO_REFRESH_SEC - int(elapsed))
-mins, secs = divmod(remaining, 60)
-refresh_requested = False
+
+refresh_requested=False
 with st.sidebar:
-    st.markdown("## ⚙️ 控制面板")
-    st.caption("刷新會更新四指數Top30及深度掃描；改選頁面本身不會重掃。")
-    market = st.radio("市場", ["🌐 四指數", "🇭🇰 港股", "🇺🇸 美股", "📋 自選"], index=0)
-    custom_input = ""
-    if market == "📋 自選":
-        custom_input = st.text_area("輸入代碼（每行一個）", "0700.HK\nNVDA")
-    include_core = st.checkbox("合併永久自選／持倉名單", value=True)
-    force_full = st.checkbox("強制重抓成分及基本面（較慢）", value=False)
-    refresh_requested = st.button("🔄 刷新資料並自動掃描", type="primary")
-    view_mode = st.radio("顯示模式", ["新手模式", "進階模式"], index=0)
-    st.caption("預設：各市場最新完整交易日；收市後另等15分鐘。此版不包含盤中榜及背景排程。")
-    st.caption("富途已連接" if quote_ctx else "富途未連接：使用Yahoo；成交額不足時明確標示估算。")
-    with st.expander("永久名單管理／備份"):
-        additions = st.text_area("新增永久代碼（每行一個；港股如0700.HK）", key="core_additions")
+    st.markdown("## ⚙️ Yahoo獨立版控制面板")
+    st.success("使用Yahoo Finance；沒有券商連線及OpenD初始化。")
+    market=st.radio("市場",["🌐 四指數","🇭🇰 港股","🇺🇸 美股","📋 自選"],index=0)
+    custom_input=""
+    if market=="📋 自選":
+        custom_input=st.text_area("輸入代碼（每行一個）","0700.HK\nNVDA")
+    include_core=st.checkbox("合併永久自選／持倉名單",value=True)
+    force_full=st.checkbox("強制更新成分及基本面（較慢）",value=False)
+    refresh_requested=st.button("🔄 刷新資料並自動掃描",type="primary")
+    view_mode=st.radio("顯示模式",["新手模式","進階模式"],index=0)
+    st.caption("納指採Nasdaq-100；各指數各取30後去重。使用最新完整交易日，收市後等待15分鐘。")
+    st.caption("首次開頁不抓行情。按刷新／掃描才下載；本版沒有背景排程或盤中榜。")
+    with st.expander("永久名單管理及備份"):
+        additions=st.text_area("加入永久名單（每行一個，例如0700.HK或AAPL）",key="core_additions")
         if st.button("加入永久名單"):
-            valid = [normalize_ticker(t.strip(), t.strip().upper().endswith(".HK")) for t in additions.splitlines() if t.strip()]
-            if any(t is None for t in valid):
-                st.error("有不合法代碼；本次未寫入。")
+            valid=[normalize_symbol(t.strip(),t.strip().upper().endswith(".HK")) for t in additions.splitlines() if t.strip()]
+            if not valid or any(t is None for t in valid):
+                st.error("沒有有效代碼或包含不合法代碼；本次未寫入。")
             else:
-                with sqlite3.connect(DB_FILE, timeout=30) as conn:
-                    conn.executemany("INSERT OR IGNORE INTO permanent_watchlist VALUES (?,?,?)", [(t,"手動新增／持倉",hkt_now().isoformat()) for t in valid])
-                st.success("已加入；按刷新將納入掃描。")
-        st.download_button("匯出永久名單備份", "\n".join(permanent_tickers()), "permanent_watchlist.txt", mime="text/plain")
-        st.caption("本地SQLite並非雲端永久儲存保證；持倉股請加入這份名單，未接券商持倉同步。")
+                with sqlite3.connect(DB_FILE,timeout=30) as conn:
+                    conn.executemany("INSERT OR IGNORE INTO permanent_watchlist VALUES (?,?,?)",[(t,"手動新增／持倉",hkt_now().isoformat()) for t in valid])
+                st.success("已加入；按刷新後納入掃描。")
+        st.download_button("匯出永久名單","\n".join(permanent_tickers()),"permanent_watchlist.txt",mime="text/plain")
+        st.caption("持倉股請自行加入永久名單；沒有券商持倉同步。本地SQLite需另作備份。")
+    with st.expander("交易日曆檢查"):
+        if st.button("檢查交易日曆"):
+            for calendar_market in ("HK","US"):
+                ci=calendar_info(calendar_market)
+                if ci["date"]:
+                    st.write(f"{calendar_market} 最新完整交易日：{ci['date']}")
+                else:
+                    st.warning(ci["error"])
 
-context_key = json.dumps([market, custom_input, include_core], ensure_ascii=False)
-if st.session_state.get("result_context") != context_key:
-    st.session_state["latest_results"] = []
-    st.session_state["pool_report"] = []
-    st.session_state["scan_errors"] = []
-    st.session_state["result_context"] = context_key
+context_key=json.dumps([market,custom_input,include_core],ensure_ascii=False)
+if st.session_state.get("result_context")!=context_key:
+    st.session_state["result_context"]=context_key
+    st.session_state["latest_results"]=[]
+    st.session_state["pool_report"]=[]
+    st.session_state["scan_errors"]=[]
+    st.session_state["scan_summary"]={}
 if refresh_requested:
-    st.session_state.last_refresh = time.time()
+    clear_errors()
     fetch_ohlcv.clear()
     fetch_macro.clear()
-    fetch_rank_prices.clear()
+    download_analysis_batch.clear()
+    download_rank_batch.clear()
+    calendar_info.clear()
     if force_full:
         fetch_constituents.clear()
         get_full_stock_info.clear()
-    clear_errors()
 
-macro_data = fetch_macro()
-regime = classify_market_state(market if market != "📋 自選" else "🇺🇸 美股", macro_data)
-benchmark_df = fetch_ohlcv(regime["benchmark"], period="2y")
+macro_data=st.session_state.get("macro_data",{})
+regime={"name":"尚未更新","benchmark":"^HSI" if market=="🇭🇰 港股" else "SPY",
+        "return_60d":0.0,"vol":0.0,"vol_index":np.nan}
 
-st.markdown("# 📈 股票監察系統 Pro+｜V4.7 四指數Top30自動掃描")
+st.markdown("# 📈 股票監察系統 Pro+｜V4.7.2 Yahoo獨立版")
 st.caption(f"模型：{MODEL_VERSION}｜程式版本：{APP_VERSION}｜頁面生成：{hkt_now().strftime('%Y-%m-%d %H:%M:%S %Z')} HKT")
 st.warning("本系統用於研究與風險管理，不構成投資建議。任何「可小量試倉」都不是預測見底或保證收益；必須以可執行價格、10日結構支持止損與組合風險為準。")
 
@@ -1501,53 +1491,66 @@ tabs = st.tabs([
 
 with tabs[0]:
     st.subheader("🌍 宏觀市場氣氛")
-    render_metrics(macro_data, regime)
+    if st.button("更新市場氣氛",key="update_macro"):
+        with st.spinner("下載宏觀行情…"):
+            macro_data=fetch_macro()
+            st.session_state["macro_data"]=macro_data
+            regime=classify_market_state("🇭🇰 港股" if market=="🇭🇰 港股" else "🇺🇸 美股",macro_data)
+            st.session_state["dashboard_regime"]={"market":market,"regime":regime}
+    saved_regime=st.session_state.get("dashboard_regime",{})
+    if saved_regime.get("market")==market:
+        regime=saved_regime["regime"]
+    if macro_data:
+        render_metrics(macro_data,regime)
+        st.caption("四指數／自選模式的上方Regime面板使用美股基準；決策掃描仍按每隻股票的市場分別處理。宏觀面板及正式掃描均嘗試截取至各市場完整交易日；資料未齊時顯示N/A或暫停本市場。")
+    else:
+        st.info("按『更新市場氣氛』載入宏觀報價；初次開頁不會自動下載。")
     st.markdown("""
 **如何使用 Regime 與 TSPR V4.6：** 系統現已整合 **TSPR 10日結構支持位**、**江恩 50% 分水嶺** 與 **OBV / MFI 資金流破位確認**，並自動計算每次跌穿支持後的 **最大下跌幅度 (%)** 與 **頂部至低點總跌幅 (%)**。
 """)
 
 with tabs[1]:
     st.subheader("📊 決策掃描｜資格 → 估值 → TSPR 10日支持/江恩50%/OBV確認 → 下跌幅度與風險")
-    manual_scan = st.button("🚀 更新股票池並執行決策掃描", type="primary", key="decision_scan")
-    st.caption("四指數各取成交額Top30 → 合併去重 → 加入永久名單 → 個別市場基準分析。納指預設Nasdaq-100，不是綜合指數。")
+    manual_scan=st.button("🚀 更新股票池並執行決策掃描",type="primary",key="decision_scan")
+    st.caption("全部Top30以估算成交額排名：未復權收市價×成交量。各市場獨立排名，再合併去重與分析。")
     if refresh_requested or manual_scan:
-        st.session_state["latest_results"] = []
-        st.session_state["scan_errors"] = []
-        progress = st.progress(0, text="檢查交易日與成分股…")
-        pools, errors = [], []
+        clear_errors()
+        st.session_state["latest_results"]=[]
+        st.session_state["scan_summary"]={}
+        pools,errors,results=[],[],[]
+        tickers=[]
+        progress=st.progress(0,text="檢查交易日與自動成分表…")
         try:
-            if market == "📋 自選":
-                tickers = sorted({t.strip().upper() for t in custom_input.splitlines() if t.strip()})
+            if market=="📋 自選":
+                tickers=sorted({t.strip().upper() for t in custom_input.splitlines() if t.strip()})
             else:
-                keys = ["DJIA", "NDX", "SP500", "HSI"] if market == "🌐 四指數" else (["HSI"] if market == "🇭🇰 港股" else ["DJIA","NDX","SP500"])
-                pools, errors = build_auto_pools(keys, progress)
-                tickers = sorted({row["ticker"] for pool in pools for row in pool["top"]})
-                if include_core:
-                    core = permanent_tickers()
-                    if market == "🇭🇰 港股":
-                        core = [t for t in core if t.endswith(".HK")]
-                    elif market == "🇺🇸 美股":
-                        core = [t for t in core if not t.endswith(".HK")]
-                    tickers = sorted(set(tickers) | set(core))
+                keys=["DJIA","NDX","SP500","HSI"] if market=="🌐 四指數" else (["HSI"] if market=="🇭🇰 港股" else ["DJIA","NDX","SP500"])
+                pools,errors=build_auto_pools(keys,progress)
+                tickers=combine_scan_universe(pools,permanent_tickers() if include_core else [],market)
             if not tickers:
-                raise ValueError("沒有可掃描股票；請檢查成分及行情來源，沒有以固定名單冒充Top30。")
-            results, scan_errors = run_decision_scan(tickers, pools, progress)
+                raise ValueError("沒有可掃描股票；成分／行情來源失敗時不會虛構Top30。")
+            progress.progress(10,text="更新宏觀及市場基準…")
+            results,scan_errors=scan_universe(tickers,pools,progress,custom=market=="📋 自選")
             errors.extend(scan_errors)
-            st.session_state["latest_results"] = results
-            st.session_state["scan_summary"] = {"requested":len(tickers), "successful":len(results), "finished_at":hkt_now().isoformat()}
+            st.session_state["latest_results"]=results
+            st.session_state["scan_summary"]={"requested":len(tickers),"successful":len(results),"finished_at":hkt_now().isoformat()}
         except Exception as exc:
-            errors.append(f"掃描中止：{type(exc).__name__}: {exc}")
+            errors.append(f"本輪掃描中止：{type(exc).__name__}: {str(exc)[:240]}")
         finally:
             progress.empty()
-            st.session_state["pool_report"] = pools
-            st.session_state["scan_errors"] = errors
-    render_pool_report(st.session_state.get("pool_report", []))
-    st.caption("formal_signal_eligible=False 表示只供研究；不會寫入正式試倉訊號。回退榜及不完整榜的新動態候選會被此閘門攔截。")
-    for message in st.session_state.get("scan_errors", []):
-        st.warning(message)
-    if st.session_state.get("latest_results"):
-        summary = st.session_state.get("scan_summary", {})
-        st.caption(f"本輪請求 {summary.get('requested',0)} 隻｜有效 {summary.get('successful',0)} 隻｜完成 {summary.get('finished_at','未知')}")
+            st.session_state["pool_report"]=pools
+            st.session_state["scan_errors"]=errors
+    render_pool_report(st.session_state.get("pool_report",[]))
+    errors=st.session_state.get("scan_errors",[])
+    if errors:
+        st.warning(f"本輪有{len(errors)}項資料／掃描問題，詳見下方。")
+        with st.expander("查看本輪問題",expanded=not bool(st.session_state.get("latest_results"))):
+            for message in errors:
+                st.write(message)
+    summary=st.session_state.get("scan_summary",{})
+    if summary:
+        st.caption(f"本輪請求{summary.get('requested',0)}隻｜有效{summary.get('successful',0)}隻｜完成時間{summary.get('finished_at','未知')}")
+    st.caption("formal_signal_eligible=False表示只供研究，不寫入正式試倉訊號。訊號合資格亦不代表已通過策略績效驗證。")
 
     results = st.session_state.get("latest_results", [])
     if results:
@@ -1556,7 +1559,7 @@ with tabs[1]:
         df_results["_rank"] = df_results["decision"].map(candidate_order).fillna(9)
         df_results = df_results.sort_values(["_rank", "final_score"], ascending=[True, False]).drop(columns="_rank")
         candidates = df_results[df_results["decision"].isin(["可小量試倉", "等待突破", "估值觀察"])]
-        st.success(f"掃描完成：{len(df_results)} 個有效結果；研究候選 {len(candidates)} 個；模型試倉候選 {sum(df_results['decision'] == '可小量試倉')} 個（須另看正式訊號資格）。")
+        st.success(f"掃描完成：{len(df_results)} 個有效結果；研究候選 {len(candidates)} 個；模型試倉候選 {sum(df_results['decision'] == '可小量試倉')} 個，另看正式訊號資格。")
         display_cols = [
             "ticker", "name", "pool_sources", "formal_signal_eligible", "price", "decision", "tspr_status", "tspr_support", "gann_50",
             "cycle_drop_pct", "peak_to_trough_drop_pct", "post_break_drop_pct",
@@ -1579,7 +1582,7 @@ with tabs[1]:
                 unsafe_allow_html=True
             )
     else:
-        st.info("按「執行 V4.6 決策掃描」後會顯示研究候選。")
+        st.info("按「刷新資料並自動掃描」後顯示研究候選。")
 
 with tabs[2]:
     st.subheader("💎 估值候選｜先看便宜，再看是否值得買")
@@ -1622,7 +1625,15 @@ with tabs[3]:
     left_bars_input = t_col4.number_input("支持位左側週期 (日)", min_value=5, max_value=30, value=10)
     box_period_input = t_col5.number_input("形態箱體週期 (日)", min_value=30, max_value=120, value=65)
 
-    chart_df = fetch_ohlcv(ticker, period=period_map[period])
+    chart_context=(ticker,period_map[period])
+    if st.button("載入／更新技術圖",key="load_chart"):
+        with st.spinner("下載技術圖日線…"):
+            st.session_state["chart_data"]=fetch_ohlcv(ticker,period=period_map[period])
+            st.session_state["chart_context"]=chart_context
+    chart_df=st.session_state.get("chart_data") if st.session_state.get("chart_context")==chart_context else None
+    if chart_df is None:
+        st.info("按『載入／更新技術圖』才會下載。圖表最新日線可能尚未收市；正式決策掃描會另行排除。")
+    st.caption("TSPR低點需右側5根日線確認；圖上的低點日期不是當日已知的訊號日期。破位後跌幅為事後統計，不是預測。")
     if chart_df is not None and len(chart_df) > 30:
         close = chart_df["close"]
         rsi = calc_rsi(close)
@@ -1804,10 +1815,11 @@ with tabs[4]:
             )
 
 with tabs[5]:
-    st.subheader("🧪 歷史訊號追蹤回測（不是滾動訓練／調參驗證）")
+    st.subheader("🧪 歷史訊號追蹤回測")
+    st.caption("此頁不是滾動訓練／調參的樣本外Walk-forward驗證；交易成本與跳空成交等假設仍需進一步驗證。")
     st.markdown("信號在收市後產生；回測以**下一交易日開盤價加滑點**進場。納入止損、2R 目標、固定持有期、成本；若同一日同時觸及止損與目標，保守地按先止損處理。")
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=30)
         signals = pd.read_sql_query("SELECT * FROM signals ORDER BY signal_date DESC", conn)
         conn.close()
     except Exception as exc:
@@ -1824,7 +1836,7 @@ with tabs[5]:
             cost_bps = st.number_input("單邊交易成本（bps）", min_value=0, max_value=100, value=TRANSACTION_COST_BPS)
         with c3:
             slip_bps = st.number_input("入場滑點（bps）", min_value=0, max_value=100, value=DEFAULT_SLIPPAGE_BPS)
-        if st.button("運行嚴格回測", type="primary", key="strict_bt"):
+        if st.button("運行歷史訊號回測", type="primary", key="strict_bt"):
             bt = run_walk_forward_backtest(signals, hold_days, cost_bps, slip_bps)
             if bt.empty:
                 st.info("現有信號尚未成熟，或歷史價格不足以完成所選持有期。")
@@ -1871,9 +1883,9 @@ with tabs[7]:
     st.subheader("🌟 多因子選股｜價值、質量、動能、低波動")
     st.caption("此模組適合 3–6 個月以上研究；與短線反轉系統不同。金融、虧損企業和 ETF 不適合只用 PE 與 ROE 橫向比較。")
     if st.button("執行多因子運算", type="primary", key="multi_factor"):
-        tickers = sorted({r["ticker"] for r in st.session_state.get("latest_results", [])})
+        tickers=sorted({r["ticker"] for r in st.session_state.get("latest_results",[])})
         if not tickers:
-            st.info("請先刷新並完成決策掃描；因子選股會共用同一股票池。")
+            st.info("請先完成決策掃描；因子選股使用同一個已掃描股票池。")
         info_map = {}
         with ThreadPoolExecutor(max_workers=MAX_WORKERS_DATA) as executor:
             futures = {executor.submit(get_full_stock_info, ticker): ticker for ticker in tickers}
@@ -1889,6 +1901,9 @@ with tabs[7]:
             df = data_map.get(ticker)
             info = info_map.get(ticker, {})
             if df is None or len(df) < 130 or ticker in ETF_TICKERS:
+                continue
+            pe_value=safe_float(info.get("pe"))
+            if not np.isfinite(pe_value) or pe_value<=0:
                 continue
             close = df["close"]
             returns = close.pct_change().iloc[-126:]
@@ -1924,7 +1939,7 @@ with tabs[8]:
     st.markdown("### 存儲狀態")
     st.warning("目前使用本地 SQLite。若部署在 Streamlit Community Cloud 或無持久磁盤環境，重啟或部署後數據庫可能被清空。正式長期運行請遷移至 Supabase PostgreSQL。")
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(DB_FILE, timeout=30)
         signal_count = pd.read_sql_query("SELECT COUNT(*) AS n FROM signals", conn).iloc[0]["n"]
         snapshot_count = pd.read_sql_query("SELECT COUNT(*) AS n FROM scan_snapshots", conn).iloc[0]["n"]
         conn.close()
