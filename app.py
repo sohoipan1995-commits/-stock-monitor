@@ -1,4 +1,3 @@
-"""V5.0 三引擎研究版。完整單檔Streamlit應用；不是投資建議或已驗證交易策略。"""
 import hashlib
 import json
 import math
