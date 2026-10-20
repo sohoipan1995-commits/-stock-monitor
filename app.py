@@ -22,7 +22,7 @@ from plotly.subplots import make_subplots
 
 warnings.filterwarnings("default", category=RuntimeWarning)
 
-st.set_page_config(page_title="📈 股票監察系統 V4.7.2 Yahoo獨立版", page_icon="📈", layout="wide")
+st.set_page_config(page_title="📈 股票監察系統 V4.8 動態波段整合版", page_icon="📈", layout="wide")
 
 C_RED = "#f85149"
 C_GREEN = "#3fb950"
@@ -32,7 +32,7 @@ C_PURPLE = "#bc8cff"
 C_GREY = "#8b949e"
 C_BG = "#0d1117"
 
-APP_VERSION = "V4.7.2-Yahoo-Only"
+APP_VERSION = "V4.8-Yahoo-Confirmed-Swing"
 MODEL_VERSION = "decision-v4.7.2-yahoo"
 OHLCV_TTL = 1800
 INFO_TTL = 3600
@@ -758,6 +758,236 @@ def volume_zscore(df, period=20):
     return (safe_float(volume.iloc[-1], 0) - mean) / std if std > 0 else 0.0
 
 
+# ==================== V4.8 已確認波段與動態 Fibonacci ====================
+AUTO_FIB_FEATURE_VERSION = "confirmed-swing-fib-v1"
+AUTO_FIB_RATIOS = (0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.272, 1.618)
+
+
+def af_validate(df):
+    if df is None or df.empty:
+        raise ValueError("沒有可用日線")
+    cols = ["open", "high", "low", "close", "volume"]
+    d = df[cols].copy().apply(pd.to_numeric, errors="coerce")
+    d.index = pd.DatetimeIndex(pd.to_datetime(d.index))
+    if d.index.has_duplicates or not d.index.is_monotonic_increasing:
+        raise ValueError("日期必須遞增且不重複")
+    if not np.isfinite(d.to_numpy()).all():
+        raise ValueError("OHLCV含缺失或無限值")
+    if ((d[cols[:4]] <= 0).any().any() or (d.volume < 0).any()
+        or (d.high < d[["open", "close", "low"]].max(axis=1)).any()
+        or (d.low > d[["open", "close", "high"]].min(axis=1)).any()):
+        raise ValueError("OHLCV價格範圍不合法")
+    return d
+
+
+def af_atr(df, period=14):
+    prev = df.close.shift()
+    tr = pd.concat([df.high-df.low, (df.high-prev).abs(), (df.low-prev).abs()], axis=1).max(axis=1)
+    values = np.full(len(df), np.nan)
+    if len(df) >= period:
+        values[period-1] = tr.iloc[:period].mean()
+        for i in range(period, len(df)):
+            values[i] = (values[i-1]*(period-1)+tr.iloc[i])/period
+    return pd.Series(values, index=df.index)
+
+
+def af_replay(df, left=10, right=5, min_swing_atr=2.0, zone_atr=0.35):
+    if int(left) != left or int(right) != right or left < 1 or right < 1:
+        raise ValueError("左右窗口必須是正整數")
+    if not np.isfinite(min_swing_atr) or not np.isfinite(zone_atr) or min_swing_atr < 0 or zone_atr <= 0:
+        raise ValueError("ATR參數不合法")
+    left, right = int(left), int(right)
+    d = af_validate(df)
+    atr = af_atr(d)
+    highs, lows, closes = d.high.to_numpy(), d.low.to_numpy(), d.close.to_numpy()
+    swings, events, history = [], [], []
+    for i in range(len(d)):
+        p = i-right
+        if p >= left and np.isfinite(atr.iloc[i]) and atr.iloc[i] > 0:
+            lo, hi = lows[p-left:i+1], highs[p-left:i+1]
+            is_low = lows[p] < min(lo[:left]) and lows[p] <= min(lo[left+1:])
+            is_high = highs[p] > max(hi[:left]) and highs[p] >= max(hi[left+1:])
+            if bool(is_low) != bool(is_high):
+                kind = "low" if is_low else "high"
+                value = float(lows[p] if is_low else highs[p])
+                pivot = {"kind":kind, "price":value, "pivot_index":p, "pivot_date":d.index[p],
+                         "confirmed_index":i, "confirmed_at":d.index[i]}
+                accepted, replace = not swings, False
+                if swings:
+                    last = swings[-1]
+                    if last["kind"] == kind:
+                        replace = value < last["price"] if kind == "low" else value > last["price"]
+                        accepted = replace
+                    else:
+                        directional = value > last["price"] if kind == "high" else value < last["price"]
+                        accepted = directional and abs(value-last["price"]) >= min_swing_atr*atr.iloc[i]
+                if accepted:
+                    if replace:
+                        swings[-1] = pivot
+                    else:
+                        swings.append(pivot)
+                    events.append(dict(pivot, action="replace" if replace else "append"))
+        row = {"asof":d.index[i], "close":float(closes[i]), "atr":float(atr.iloc[i]),
+               "direction":"unavailable", "anchor_a":np.nan, "anchor_b":np.nan,
+               "anchor_a_date":pd.NaT, "anchor_b_date":pd.NaT, "available_at":pd.NaT,
+               "retracement_pct":np.nan, "price_change_from_b_pct":np.nan,
+               "nearest_ratio":np.nan, "nearest_price":np.nan, "distance_atr":np.nan,
+               "near_zone":False, "invalidated":False, "status":"等待兩個已確認波段點"}
+        if len(swings) >= 2:
+            a,b = swings[-2:]
+            delta = b["price"]-a["price"]
+            if delta != 0:
+                levels = {r:b["price"]-r*delta for r in AUTO_FIB_RATIOS if b["price"]-r*delta > 0}
+                near = min(levels,key=lambda r:abs(closes[i]-levels[r]))
+                dist = abs(closes[i]-levels[near])/atr.iloc[i] if atr.iloc[i] > 0 else np.nan
+                retr = (b["price"]-closes[i])/delta*100
+                row.update(direction="up" if delta > 0 else "down",
+                           anchor_a=a["price"],anchor_b=b["price"],
+                           anchor_a_date=a["pivot_date"],anchor_b_date=b["pivot_date"],
+                           available_at=b["confirmed_at"],retracement_pct=float(retr),
+                           price_change_from_b_pct=float((closes[i]/b["price"]-1)*100),
+                           nearest_ratio=near,nearest_price=levels[near],distance_atr=float(dist),
+                           near_zone=bool(dist <= zone_atr),invalidated=bool(retr >= 100),
+                           status="原波段起點已被跨越" if retr >= 100 else
+                                  "已突破原波段終點" if retr < 0 else
+                                  "上升段後回調" if delta > 0 else "下跌段後反彈")
+        history.append(row)
+    h = pd.DataFrame(history).set_index("asof")
+    for col in ("anchor_a_date","anchor_b_date","available_at"):
+        h[col] = pd.to_datetime(h[col])
+    return {"data":d, "history":h, "events":pd.DataFrame(events), "swings":swings,
+            "left":left,"right":right,"min_swing_atr":min_swing_atr,"zone_atr":zone_atr}
+
+
+def af_levels(result):
+    h = result["history"].iloc[-1]
+    if h.direction == "unavailable":
+        return pd.DataFrame()
+    rows = []
+    for r in AUTO_FIB_RATIOS:
+        p = h.anchor_b-r*(h.anchor_b-h.anchor_a)
+        if p <= 0:
+            continue
+        width = result["zone_atr"]*h.atr
+        rows.append({"ratio":r,"price":p,"lower":p-width,"upper":p+width,
+                     "meaning":"跨越起點的反向延伸" if r > 1 else "起點" if r == 1 else
+                               "上升段回調" if h.direction == "up" else "下跌段反彈"})
+    return pd.DataFrame(rows)
+
+
+def af_snapshot(df):
+    defaults = {"auto_fib_version":AUTO_FIB_FEATURE_VERSION,"auto_fib_status":"資料不足",
+                "auto_fib_direction":"unavailable","auto_fib_retracement_pct":None,
+                "auto_fib_nearest_ratio":None,"auto_fib_nearest_price":None,
+                "auto_fib_distance_atr":None,"auto_fib_near_zone":False,
+                "auto_fib_invalidated":False,"auto_fib_confirmed_at":None,
+                "auto_fib_anchor_a":None,"auto_fib_anchor_b":None,
+                "auto_fib_anchor_a_date":None,"auto_fib_anchor_b_date":None,
+                "auto_fib_price_change_from_b_pct":None,"auto_fib_error":None,
+                "auto_fib_parameters":"left=10;right=5;min_swing_atr=2;zone_atr=0.35"}
+    try:
+        h = af_replay(df)["history"].iloc[-1]
+        defaults.update(auto_fib_status=h.status,auto_fib_direction=h.direction,
+                        auto_fib_near_zone=bool(h.near_zone),auto_fib_invalidated=bool(h.invalidated))
+        for key in ("retracement_pct","nearest_ratio","nearest_price","distance_atr",
+                    "anchor_a","anchor_b","price_change_from_b_pct"):
+            v = h[key]
+            defaults["auto_fib_"+key] = float(v) if pd.notna(v) and np.isfinite(v) else None
+        for src,dst in (("available_at","confirmed_at"),("anchor_a_date","anchor_a_date"),("anchor_b_date","anchor_b_date")):
+            defaults["auto_fib_"+dst] = str(pd.Timestamp(h[src]).date()) if pd.notna(h[src]) else None
+    except Exception as exc:
+        defaults.update(auto_fib_status="波段計算失敗；不改動原評分",auto_fib_error=f"{type(exc).__name__}: {str(exc)[:160]}")
+    return defaults
+
+
+def af_figure(result, bars=240):
+    d = result["data"].iloc[-bars:]
+    h = result["history"].iloc[-1]
+    fig = go.Figure(go.Candlestick(x=d.index,open=d.open,high=d.high,low=d.low,close=d.close,name="完整日線"))
+    if h.direction != "unavailable":
+        start = max(h.available_at,d.index[0])
+        for row in af_levels(result).itertuples():
+            color = C_PURPLE if row.ratio in (.5,.618) else C_GREY
+            fig.add_trace(go.Scatter(x=[start,d.index[-1]],y=[row.price,row.price],mode="lines",
+                                    name=f"{row.ratio:.3f} | {row.price:,.2f}",line=dict(color=color,width=1)))
+            if row.ratio in (.5,.618):
+                fig.add_shape(type="rect",x0=start,x1=d.index[-1],y0=row.lower,y1=row.upper,
+                              fillcolor=C_PURPLE,opacity=.14,line_width=0,layer="below")
+    events = result["events"]
+    if not events.empty:
+        events = events[events.confirmed_at >= d.index[0]]
+        for kind,symbol,color in (("low","triangle-up",C_GREEN),("high","triangle-down",C_RED)):
+            e = events[events.kind == kind]
+            fig.add_trace(go.Scatter(x=e.confirmed_at,y=e.price,mode="markers",name=f"{kind}確認日",
+                                    customdata=e.pivot_date.astype(str),
+                                    hovertemplate="確認日：%{x}<br>原轉折日：%{customdata}<br>轉折價：%{y}<extra></extra>",
+                                    marker=dict(symbol=symbol,color=color,size=9)))
+    fig.update_layout(template="plotly_dark",height=650,xaxis_rangeslider_visible=False,
+                      title="當前有效比例水平：只從確認日起畫線",legend=dict(orientation="h"))
+    return fig
+
+
+def render_auto_fib_panel():
+    st.subheader("📐 動態波段／黃金比率與調整幅度")
+    st.caption("沿用主系統Yahoo快取與完整交易日檢查。此模組不改動原評分、買賣分類、止損或目標。")
+    with st.form("auto_fib_form"):
+        a,b,c = st.columns(3)
+        tk = a.text_input("股票／指數代號","^HSI",key="auto_fib_ticker").strip().upper()
+        left = int(b.number_input("左側比較交易日",3,30,10,key="auto_fib_left"))
+        right = int(c.number_input("右側確認交易日",2,15,5,key="auto_fib_right"))
+        a,b = st.columns(2)
+        min_atr = a.number_input("最小反向波段 ATR 倍數",0.0,5.0,2.0,.25,key="auto_fib_min_atr")
+        zone = b.number_input("候選區域半寬 ATR 倍數",.1,1.0,.35,.05,key="auto_fib_zone")
+        requested = st.form_submit_button("載入／更新波段研究")
+    context = (tk,left,right,min_atr,zone)
+    if requested:
+        st.session_state.pop("auto_fib_research",None)
+        try:
+            if tk not in {"^HSI","^HSCE","^GSPC","^NDX","^DJI"} and not re.fullmatch(r"[A-Z0-9][A-Z0-9.=-]{0,19}",tk):
+                raise ValueError("請輸入港股、美股或支援的港美指數代號")
+            code = "HK" if tk.endswith(".HK") or tk in {"^HSI","^HSCE"} else "US"
+            target = completed_session(code)
+            if not target:
+                raise ValueError("未能確認完整交易日："+str(calendar_info(code).get("error")))
+            with st.spinner("讀取完整日線並重播波段…"):
+                fetch_ohlcv.clear()
+                frame = trim_completed(fetch_ohlcv(tk,"2y"),target)
+                if frame is None or frame.empty or str(frame.index[-1].date()) != target:
+                    raise ValueError(f"缺少{target}完整日線；不以舊價格作最新研究")
+                result = af_replay(frame,left,right,min_atr,zone)
+                st.session_state["auto_fib_research"] = {"context":context,"ticker":tk,"target":target,"result":result}
+        except Exception as exc:
+            add_error("動態波段研究失敗",tk,exc)
+            st.error(f"未能載入：{exc}")
+    saved = st.session_state.get("auto_fib_research")
+    if not saved or saved["context"] != context:
+        st.info("按『載入／更新波段研究』才會下載；初次開頁不會新增行情請求。")
+        return
+    result = saved["result"]
+    h = result["history"].iloc[-1]
+    st.caption(f"{saved['ticker']}｜研究資料截至 {saved['target']}｜復權日線｜右側確認延遲 {right} 個交易日；非盤中報價")
+    cols = st.columns(4)
+    cols[0].metric("收市價",f"{h.close:,.3f}")
+    cols[1].metric("ATR(14)",f"{h.atr:,.3f}")
+    cols[2].metric("波段回吐／收復比例",f"{h.retracement_pct:.1f}%" if pd.notna(h.retracement_pct) else "未建立")
+    cols[3].metric("相對波段終點價格變化",f"{h.price_change_from_b_pct:+.2f}%" if pd.notna(h.price_change_from_b_pct) else "未建立")
+    st.info(h.status)
+    if h.direction != "unavailable":
+        st.write(f"錨點 {h.anchor_a:,.3f} → {h.anchor_b:,.3f}；由 {pd.Timestamp(h.available_at).date()} 收市起可用。")
+        st.write(f"最近比例 {h.nearest_ratio:.3f}：{h.nearest_price:,.3f}；距離 {h.distance_atr:.2f} ATR。")
+        if h.invalidated:
+            st.warning("已跨越原波段起點；勿再沿用原方向的回調／反彈假設。")
+        elif h.near_zone:
+            st.warning("接近候選價格區域；並非已確認反轉或買入訊號。")
+    st.plotly_chart(af_figure(result),use_container_width=True,key="auto_fib_chart")
+    st.dataframe(af_levels(result),use_container_width=True,hide_index=True)
+    with st.expander("波段確認事件及逐日特徵匯出"):
+        st.dataframe(result["events"].tail(40),use_container_width=True,hide_index=True)
+        st.download_button("匯出逐日可見特徵CSV",result["history"].to_csv().encode("utf-8-sig"),
+                           file_name=f"{tk}_confirmed_swing_fib.csv",mime="text/csv",key="auto_fib_export")
+    st.caption("三角形橫座標為確認日，縱座標為較早轉折價格，不是當日高低價。1.272/1.618為越過起點的反向延伸，不是順勢目標。")
+    st.caption("掃描固定使用10/5、2 ATR、0.35 ATR；本頁參數只供研究，不改變掃描。未估計成功率，未驗證績效優於原系統。")
+
 def decision_engine(ticker, df, info, regime, benchmark_df):
     if df is None or len(df) < 210:
         return None
@@ -940,7 +1170,9 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     if not reasons:
         reasons.append("尚未形成足夠的底部或反轉證據")
 
+    auto_fib_features = af_snapshot(df)
     return {
+        **auto_fib_features,
         "ticker": ticker, "name": info.get("name", ticker), "sector": sector,
         "price": round(price, 3), "last_bar": str(pd.Timestamp(df.index[-1]).date()),
         "decision": decision, "next_step": next_step, "final_score": round(final_score, 1),
@@ -1458,7 +1690,7 @@ with st.sidebar:
                 else:
                     st.warning(ci["error"])
 
-context_key=json.dumps([market,custom_input,include_core],ensure_ascii=False)
+context_key=json.dumps([APP_VERSION,market,custom_input,include_core],ensure_ascii=False)
 if st.session_state.get("result_context")!=context_key:
     st.session_state["result_context"]=context_key
     st.session_state["latest_results"]=[]
@@ -1480,13 +1712,13 @@ macro_data=st.session_state.get("macro_data",{})
 regime={"name":"尚未更新","benchmark":"^HSI" if market=="🇭🇰 港股" else "SPY",
         "return_60d":0.0,"vol":0.0,"vol_index":np.nan}
 
-st.markdown("# 📈 股票監察系統 Pro+｜V4.7.2 Yahoo獨立版")
+st.markdown("# 📈 股票監察系統 Pro+｜V4.8 動態波段整合版")
 st.caption(f"模型：{MODEL_VERSION}｜程式版本：{APP_VERSION}｜頁面生成：{hkt_now().strftime('%Y-%m-%d %H:%M:%S %Z')} HKT")
 st.warning("本系統用於研究與風險管理，不構成投資建議。任何「可小量試倉」都不是預測見底或保證收益；必須以可執行價格、10日結構支持止損與組合風險為準。")
 
 tabs = st.tabs([
     "🌍 市場氣氛", "📊 決策掃描", "💎 估值候選", "📈 技術圖表 (含TSPR及跌幅統計)", "📐 回撤/江恩",
-    "🧪 歷史訊號回測", "⚖️ 組合風控", "🌟 因子選股", "🛠️ 系統健康"
+    "🧪 歷史訊號回測", "⚖️ 組合風控", "🌟 因子選股", "🛠️ 系統健康", "📐 動態波段研究"
 ])
 
 with tabs[0]:
@@ -1567,6 +1799,20 @@ with tabs[1]:
             "confirmation_price", "stop_loss", "target_2r", "last_bar"
         ]
         st.dataframe(candidates[display_cols], use_container_width=True, hide_index=True)
+
+        st.caption("動態波段特徵已隨掃描保存；不影響原總分與試倉分類。")
+        fib_columns = ["ticker","decision","auto_fib_status","auto_fib_retracement_pct",
+                       "auto_fib_nearest_ratio","auto_fib_nearest_price","auto_fib_distance_atr",
+                       "auto_fib_near_zone","auto_fib_invalidated","auto_fib_confirmed_at","auto_fib_error"]
+        with st.expander("📐 查看全部掃描結果的動態波段位置",expanded=False):
+            st.dataframe(df_results.reindex(columns=fib_columns).rename(columns={
+                "ticker":"代號","decision":"原有決策","auto_fib_status":"波段狀態",
+                "auto_fib_retracement_pct":"回吐／收復比例%","auto_fib_nearest_ratio":"最近比率",
+                "auto_fib_nearest_price":"最近水平","auto_fib_distance_atr":"距離ATR",
+                "auto_fib_near_zone":"接近區域","auto_fib_invalidated":"跨越起點",
+                "auto_fib_confirmed_at":"錨點確認日","auto_fib_error":"波段計算錯誤"}),
+                use_container_width=True,hide_index=True)
+
         if view_mode == "進階模式":
             st.markdown("### 完整審核表")
             st.dataframe(df_results, use_container_width=True, hide_index=True)
@@ -1957,3 +2203,7 @@ with tabs[8]:
             st.rerun()
     else:
         st.success("本次頁面運行暫未記錄錯誤。注意：這不代表所有歷史數據完整或策略已驗證。")
+
+
+with tabs[9]:
+    render_auto_fib_panel()
