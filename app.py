@@ -136,52 +136,159 @@ def clear_errors():
     st.session_state.error_log = []
 
 
+SIGNALS_CREATE_SQL = """
+    CREATE TABLE IF NOT EXISTS signals (
+        signal_date TEXT NOT NULL,
+        ticker TEXT NOT NULL,
+        model_version TEXT NOT NULL,
+        decision TEXT,
+        total_score REAL,
+        price REAL,
+        confirmation_price REAL,
+        stop_loss REAL,
+        target_2r REAL,
+        market_regime TEXT,
+        sector TEXT,
+        features_json TEXT,
+        created_at TEXT,
+        PRIMARY KEY (signal_date, ticker, model_version)
+    )
+"""
+SNAPSHOTS_CREATE_SQL = """
+    CREATE TABLE IF NOT EXISTS scan_snapshots (
+        snapshot_date TEXT NOT NULL,
+        ticker TEXT NOT NULL,
+        model_version TEXT NOT NULL,
+        payload_json TEXT,
+        created_at TEXT,
+        PRIMARY KEY (snapshot_date, ticker, model_version)
+    )
+"""
+SIGNALS_REQUIRED = {"signal_date", "ticker", "model_version", "decision", "total_score", "price", "confirmation_price",
+                    "stop_loss", "target_2r", "market_regime", "sector", "features_json", "created_at"}
+SNAPSHOTS_REQUIRED = {"snapshot_date", "ticker", "model_version", "payload_json", "created_at"}
+
+
+def backup_db_file():
+    """遷移前先建立獨立備份檔（不是同一資料庫內的改名）。備份失敗就不開始遷移。"""
+    stamp = hkt_now().strftime("%Y%m%d_%H%M%S")
+    backup_path = f"{DB_FILE}.backup_{stamp}"
+    source = sqlite3.connect(DB_FILE, timeout=30)
+    target = sqlite3.connect(backup_path, timeout=30)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+    return backup_path
+
+
+def migrate_legacy_table(conn, table, create_sql, required, key_columns, stamp):
+    """在單一交易內：改名保留舊表 → 重建新表 → 只複製可可靠對應的欄位。
+    不猜測欄位含義；缺少必要鍵欄位時不複製，只封存並明確回報。"""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if not existing or not (required - existing):
+        conn.execute(create_sql)
+        return None
+    legacy = f"{table}_legacy_{stamp}"
+    conn.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+    conn.execute(create_sql)
+    kept = conn.execute(f"SELECT COUNT(*) FROM {legacy}").fetchone()[0]
+    missing_keys = [c for c in key_columns if c not in existing]
+    if missing_keys:
+        return {"table": table, "legacy": legacy, "kept_rows": kept, "copied": 0,
+                "missing_key": kept, "duplicate": 0, "other": 0,
+                "reason": f"舊表沒有欄位 {missing_keys}，無法可靠對應；舊資料只作封存，不猜測對應"}
+    common = sorted(existing & required)
+    insert_cols, select_parts = list(common), list(common)
+    if "model_version" in existing:
+        select_parts[insert_cols.index("model_version")] = "COALESCE(model_version,'legacy-unknown')"
+    else:
+        insert_cols.append("model_version")
+        select_parts.append("'legacy-unknown'")
+    keys = list(key_columns)
+    key_cols_sql = ",".join(keys)
+    not_null_where = " AND ".join(f"{c} IS NOT NULL" for c in keys)
+    conn.execute(
+        f"INSERT OR IGNORE INTO {table} ({','.join(insert_cols)}) "
+        f"SELECT {','.join(select_parts)} FROM {legacy} "
+        f"WHERE {not_null_where} AND ({key_cols_sql}) IN ("
+        f"SELECT {key_cols_sql} FROM {legacy} WHERE {not_null_where} "
+        f"GROUP BY {key_cols_sql} HAVING COUNT(*)=1)"
+    )
+    copied = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    missing_key = conn.execute(
+        f"SELECT COUNT(*) FROM {legacy} WHERE " + " OR ".join(f"{c} IS NULL" for c in keys)
+    ).fetchone()[0]
+    unique_valid = conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT {key_cols_sql} FROM {legacy} WHERE {not_null_where} "
+        f"GROUP BY {key_cols_sql} HAVING COUNT(*)=1)"
+    ).fetchone()[0]
+    duplicate = kept - missing_key - unique_valid
+    other = unique_valid - copied
+    return {"table": table, "legacy": legacy, "kept_rows": kept, "copied": copied,
+            "missing_key": missing_key, "duplicate": duplicate, "other": other}
+
+
 def init_db():
+    needs_migration = False
+    if os.path.exists(DB_FILE):
+        probe = sqlite3.connect(DB_FILE, timeout=30)
+        try:
+            for table, required in (("signals", SIGNALS_REQUIRED), ("scan_snapshots", SNAPSHOTS_REQUIRED)):
+                existing = {row[1] for row in probe.execute(f"PRAGMA table_info({table})")}
+                if existing and (required - existing):
+                    needs_migration = True
+        finally:
+            probe.close()
+    backup_path = None
+    if needs_migration:
+        backup_path = backup_db_file()
     conn = sqlite3.connect(DB_FILE, timeout=30)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            signal_date TEXT NOT NULL,
-            ticker TEXT NOT NULL,
-            model_version TEXT NOT NULL,
-            decision TEXT,
-            total_score REAL,
-            price REAL,
-            confirmation_price REAL,
-            stop_loss REAL,
-            target_2r REAL,
-            market_regime TEXT,
-            sector TEXT,
-            features_json TEXT,
-            created_at TEXT,
-            PRIMARY KEY (signal_date, ticker, model_version)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS scan_snapshots (
-            snapshot_date TEXT NOT NULL,
-            ticker TEXT NOT NULL,
-            model_version TEXT NOT NULL,
-            payload_json TEXT,
-            created_at TEXT,
-            PRIMARY KEY (snapshot_date, ticker, model_version)
-        )
-    """)
-    required = {"signal_date","ticker","model_version","decision","total_score","price","confirmation_price",
-                "stop_loss","target_2r","market_regime","sector","features_json","created_at"}
-    for table, cols in (("signals", required), ("scan_snapshots", {"snapshot_date","ticker","model_version","payload_json","created_at"})):
-        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-        missing = cols - existing
-        if missing:
-            conn.close()
-            raise RuntimeError(f"{table} 表缺少欄位 {sorted(missing)}；舊資料庫不相容，請先備份 {DB_FILE} 再遷移")
-    conn.commit()
-    conn.close()
+    conn.isolation_level = None
+    migrations = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        stamp = hkt_now().strftime("%Y%m%d_%H%M%S")
+        for table, create_sql, required, key_columns in (
+            ("signals", SIGNALS_CREATE_SQL, SIGNALS_REQUIRED, ("signal_date", "ticker")),
+            ("scan_snapshots", SNAPSHOTS_CREATE_SQL, SNAPSHOTS_REQUIRED, ("snapshot_date", "ticker")),
+        ):
+            info = migrate_legacy_table(conn, table, create_sql, required, key_columns, stamp)
+            if info:
+                migrations.append(info)
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+    return migrations, backup_path
 
 
 try:
-    init_db()
+    _migrations, _backup_path = init_db()
+    for _migration in _migrations:
+        _not_converted = _migration["kept_rows"] - _migration["copied"]
+        _breakdown = (f"缺少必要鍵值 {_migration['missing_key']} 筆／重複鍵 {_migration['duplicate']} 筆"
+                      + (f"／其他 {_migration['other']} 筆" if _migration.get("other") else ""))
+        st.warning(
+            f"已遷移 {_migration['table']}：舊表完整保留為 {_migration['legacy']}（原始 {_migration['kept_rows']} 筆），"
+            f"已轉換 {_migration['copied']} 筆，未轉換 {_not_converted} 筆（{_breakdown}）；"
+            f"未轉換資料完整保留在封存表，不作修改。缺少版本的已轉換資料標記為 legacy-unknown，"
+            f"已有版本保持不變；封存資料不作任何修改。"
+        )
+    if _backup_path:
+        st.info(
+            f"遷移前已建立獨立備份：{_backup_path}。如需回復，必須先停止應用（關閉所有資料庫連線），"
+            f"再以備份檔替換 {DB_FILE}，並刪除同目錄的 -wal／-shm 檔；應用運行中不可直接覆蓋。"
+        )
 except Exception as exc:
-    st.error(f"資料庫初始化失敗：{exc}。請先備份signals.db，再檢查磁盤權限及資料表結構。")
+    st.error(f"資料庫初始化失敗：{exc}。本次沒有修改任何資料表；請先備份signals.db，再檢查磁盤權限及資料表結構。")
     st.stop()
 
 
