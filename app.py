@@ -1318,3 +1318,473 @@ def run_walk_forward_backtest(signal_df, hold_days=20, costs_bps=TRANSACTION_COS
             "持有日": exit_i - entry_i + 1, "結果": outcome, "淨回報%": round(net, 2), "納入統計": True
         })
     return pd.DataFrame(rows)
+
+
+# ==================== 側邊欄與掃描流程 ====================
+with st.sidebar:
+    st.markdown("## ⚙️ 撈底雷達控制面板")
+    pool_choice = st.radio(
+        "選擇掃描股票池",
+        [
+            "🔥 核心追蹤池 (美股+港股精選 44 隻)",
+            "🇺🇸 美股核心池 (ADBE/CRM/ORCL/MSTR等)",
+            "🇭🇰 港股核心藍籌科技池",
+            "🌐 完整擴展池 (核心+熱門共 64 隻)",
+            "📋 自訂輸入代碼"
+        ],
+        index=0
+    )
+    custom_input = ""
+    if pool_choice == "📋 自訂輸入代碼":
+        custom_input = st.text_area("每行一個代碼", "ADBE\nCRM\nORCL\nPYPL\nMSTR\nPFE\nLITE\nUNH\nUBER\nLLY\n0700.HK")
+
+    fetch_fundamentals = st.checkbox("同步抓取 Yahoo 基本面估值", value=True, help="若只想秒速看技術面撈底排行，可取消勾選以大幅提速")
+    scan_btn = st.button("🚀 立即執行撈底＋三引擎掃描", type="primary", use_container_width=True)
+
+    with st.expander("📌 管理永久自選名單"):
+        new_tickers = st.text_area("新增代碼（每行一個）", key="add_perm")
+        if st.button("加入名單"):
+            valid = [normalize_symbol(x) for x in new_tickers.splitlines() if normalize_symbol(x)]
+            if valid:
+                with sqlite3.connect(DB_FILE, timeout=30) as conn:
+                    conn.executemany("INSERT OR IGNORE INTO permanent_watchlist VALUES (?,?,?)",
+                                     [(t, "手動新增", hkt_now().isoformat()) for t in valid])
+                st.success(f"已加入 {len(valid)} 隻股票！")
+
+
+def get_selected_tickers():
+    if pool_choice == "📋 自訂輸入代碼":
+        return sorted({normalize_symbol(x) for x in custom_input.splitlines() if normalize_symbol(x)})
+    if pool_choice.startswith("🇺🇸"):
+        return sorted(set(CORE_US_WATCHLIST))
+    if pool_choice.startswith("🇭🇰"):
+        return sorted(set(CORE_HK_WATCHLIST))
+    if pool_choice.startswith("🌐"):
+        return sorted(set( permanent_tickers() + EXTENDED_US_WATCHLIST ))
+    return sorted(set(CORE_US_WATCHLIST + CORE_HK_WATCHLIST))
+
+
+def execute_scan():
+    clear_errors()
+    tickers = get_selected_tickers()
+    if not tickers:
+        st.warning("股票池為空，請輸入有效代碼。")
+        return
+    progress = st.progress(5, text=f"正在批量下載 {len(tickers)} 隻股票日線與週線數據…")
+    prices = fetch_multiple(tickers, period="2y")
+
+    info_map = {}
+    if fetch_fundamentals:
+        progress.progress(45, text="正在讀取基本面估值資料（具備自動防限流降級）…")
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS_INFO) as executor:
+            futures = {executor.submit(get_full_stock_info, t): t for t in tickers if prices.get(t) is not None}
+            done = 0
+            total_f = max(1, len(futures))
+            for future in as_completed(futures):
+                t = futures[future]
+                done += 1
+                try:
+                    info_map[t] = future.result()
+                except Exception:
+                    info_map[t] = {"ticker": t, "name": t}
+                progress.progress(45 + int(done / total_f * 35), text=f"基本面讀取 {done}/{total_f} ({t})")
+
+    results = []
+    for i, t in enumerate(tickers):
+        df = prices.get(t)
+        if df is None or df.empty:
+            continue
+        info = info_map.get(t) or get_full_stock_info(t) if fetch_fundamentals else {"ticker": t, "name": t}
+        res = analyze_single_stock(t, df, info)
+        if res is not None:
+            save_snapshot_and_signal(res)
+            results.append(res)
+        progress.progress(80 + int((i + 1) / len(tickers) * 20), text=f"計算撈底與三引擎評分 {i+1}/{len(tickers)}")
+
+    progress.empty()
+    st.session_state["latest_results"] = results
+    st.session_state["last_scan_time"] = hkt_now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ==================== 頂部標題與宏觀氣氛列 ====================
+st.markdown("# 📈 股票監察系統 V5.1｜🎯 撈底潛力雷達 ＋ 三引擎估值系統")
+st.caption(f"版本：{APP_VERSION}｜更新時間：{st.session_state.get('last_scan_time', '尚未掃描')} HKT｜結合週線 WR / KDJ / CCI / SAR + 急跌爆量洗盤 + 江恩50% + 基本面安全邊際")
+
+if scan_btn or "latest_results" not in st.session_state:
+    execute_scan()
+
+# 四大工作區 Tabs (由 11 個濃縮為 4 個)
+tabs = st.tabs([
+    "🎯 1. 撈底雷達 & 估值排行榜",
+    "📈 2. 個股深度診斷 (TSPR + 週線 + 江恩/Fib)",
+    "⚖️ 3. 倉位計算機 & 歷史回測",
+    "🛠️ 4. 股票池管理 & 系統日誌"
+])
+
+# ==================== Tab 1: 撈底雷達 & 估值排行榜 ====================
+with tabs[0]:
+    results = st.session_state.get("latest_results", [])
+    if not results:
+        st.info("請點擊左側「🚀 立即執行撈底＋三引擎掃描」載入排行榜。")
+    else:
+        df_all = pd.DataFrame(results)
+
+        # 頂部統計指標卡
+        c1, c2, c3, c4, c5 = st.columns(5)
+        right_cnt = int((df_all["bottom_stage"].str.startswith("🟢")).sum())
+        left_cnt = int((df_all["bottom_stage"].str.startswith("🟡")).sum())
+        panic_cnt = int(df_all["panic_washout"].sum())
+        underval_cnt = int((pd.to_numeric(df_all["mos_pct"], errors="coerce") >= 15).sum())
+
+        c1.metric("已掃描總數", f"{len(df_all)} 隻")
+        c2.metric("🟢 右側確認 (優先撈底)", f"{right_cnt} 隻")
+        c3.metric("🟡 左側超賣 (分批候位)", f"{left_cnt} 隻")
+        c4.metric("🔥 急跌爆量洗盤止跌", f"{panic_cnt} 隻")
+        c5.metric("💎 安全邊際 ≥ 15%", f"{underval_cnt} 隻")
+
+        st.markdown("---")
+        col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
+        with col_f1:
+            rank_mode = st.radio(
+                "排行排序模式",
+                ["🎯 按『撈底潛力總分』排序 (預設)", "💎 按『估值安全邊際%』排序", "📉 按『距52週高點回撤幅度』排序"],
+                horizontal=False
+            )
+        with col_f2:
+            stage_filter = st.multiselect(
+                "篩選撈底階段",
+                ["🟢 右側確認 (優先撈底)", "🟡 左側超賣 (分批候位)", "🟠 技術超賣 (留心基本面)", "⚪ 未達撈底標準"],
+                default=["🟢 右側確認 (優先撈底)", "🟡 左側超賣 (分批候位)", "🟠 技術超賣 (留心基本面)"]
+            )
+        with col_f3:
+            market_filter = st.radio("市場篩選", ["全部", "🇺🇸 美股", "🇭🇰 港股"], horizontal=True)
+
+        view_df = df_all[df_all["bottom_stage"].isin(stage_filter)].copy()
+        if market_filter == "🇺🇸 美股":
+            view_df = view_df[~view_df["ticker"].str.endswith(".HK")]
+        elif market_filter == "🇭🇰 港股":
+            view_df = view_df[view_df["ticker"].str.endswith(".HK")]
+
+        # 若篩選後為空，自動顯示全部以免空白
+        if view_df.empty:
+            st.caption("目前篩選條件下無標的，以下顯示全部已掃描股票按撈底分排序：")
+            view_df = df_all.copy()
+
+        if rank_mode.startswith("🎯"):
+            view_df = view_df.sort_values(["bottom_score", "mos_pct"], ascending=[False, False])
+        elif rank_mode.startswith("💎"):
+            view_df = view_df.sort_values(["mos_pct", "bottom_score"], ascending=[False, False])
+        else:
+            view_df = view_df.sort_values("drop_52w_pct", ascending=True)
+
+        display_cols = {
+            "ticker": "代號",
+            "name": "名稱",
+            "price": "現價",
+            "bottom_score": "🎯 撈底總分",
+            "bottom_stage": "撈底階段",
+            "drop_52w_pct": "52W高點回撤%",
+            "w_wr": "週WR(14)",
+            "w_rsi": "週RSI(14)",
+            "w_kdj_j": "週KDJ_J",
+            "panic_washout": "爆量止跌",
+            "tspr_status": "TSPR 10日支持",
+            "val_level": "估值狀態",
+            "mos_pct": "安全邊際%",
+            "fair_base": "基準合理價",
+            "stop_loss": "建議止損",
+            "target_2r": "2R目標價",
+            "bottom_reasons": "見底觸發理由"
+        }
+
+        st.dataframe(
+            view_df[list(display_cols.keys())].rename(columns=display_cols),
+            use_container_width=True,
+            hide_index=True,
+            height=480
+        )
+
+        # 視覺化散點圖：週線超賣度 vs 撈底總分
+        st.markdown("#### 📊 撈底機會雷達圖（越靠右上角＝撈底訊號越強且估值越吸引）")
+        fig_radar = px.scatter(
+            view_df,
+            x="drop_52w_pct",
+            y="bottom_score",
+            color="bottom_stage",
+            size=np.maximum(8, view_df["bottom_score"] * 0.4),
+            text="ticker",
+            hover_data=["name", "price", "w_wr", "w_rsi", "mos_pct", "bottom_reasons"],
+            labels={"drop_52w_pct": "距 52 週高點回撤 (%)", "bottom_score": "🎯 撈底潛力總分 (0-100)"},
+            color_discrete_map={
+                "🟢 右側確認 (優先撈底)": C_GREEN,
+                "🟡 左側超賣 (分批候位)": C_ORANGE,
+                "🟠 技術超賣 (留心基本面)": C_RED,
+                "⚪ 未達撈底標準": C_GREY
+            }
+        )
+        fig_radar.update_traces(textposition="top center")
+        fig_radar.update_layout(template="plotly_dark", plot_bgcolor=C_BG, paper_bgcolor=C_BG, height=460)
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+
+# ==================== Tab 2: 個股深度診斷 (整合所有圖表與江恩/Fib/TSPR) ====================
+with tabs[1]:
+    st.subheader("📈 個股深度診斷｜三引擎卡 ＋ TSPR 10日支持破位跌幅 ＋ 週線指標 ＋ 江恩/黃金分割")
+    results = st.session_state.get("latest_results", [])
+    scanned_list = [r["ticker"] for r in results] if results else CORE_US_WATCHLIST
+
+    col_s1, col_s2, col_s3, col_s4 = st.columns([2, 2, 2, 2])
+    with col_s1:
+        pick_from_list = st.selectbox("從已掃描名單選擇", ["自訂輸入"] + scanned_list, index=1 if len(scanned_list) > 0 else 0)
+    with col_s2:
+        default_tk = pick_from_list if pick_from_list != "自訂輸入" else "ADBE"
+        diag_ticker = st.text_input("或直接輸入股票/指數代號", default_tk).strip().upper()
+    with col_s3:
+        chart_tf = st.radio("K線週期", ["日線 (1D)", "週線 (1W)"], horizontal=True)
+    with col_s4:
+        chart_period = st.selectbox("顯示長度", ["6個月", "1年", "2年", "5年"], index=1)
+
+    period_code = {"6個月": "6mo", "1年": "1y", "2年": "2y", "5年": "5y"}[chart_period]
+
+    df_diag = fetch_ohlcv(diag_ticker, period="5y")
+    if df_diag is None or len(df_diag) < 30:
+        st.error(f"無法取得 {diag_ticker} 的日線資料，請確認代號是否正確（港股請加 .HK，如 0700.HK）。")
+    else:
+        info_diag = get_full_stock_info(diag_ticker)
+        res_diag = analyze_single_stock(diag_ticker, df_diag, info_diag)
+
+        if res_diag:
+            border_c = C_GREEN if res_diag["bottom_score"] >= 68 else (C_ORANGE if res_diag["bottom_score"] >= 52 else C_BLUE)
+            st.markdown(
+                f"<div class='decision-card' style='border-left-color:{border_c}'>"
+                f"<h4>{res_diag['ticker']}（{res_diag['name']}）｜現價：{res_diag['price']}｜🎯 撈底總分：{res_diag['bottom_score']} 分｜{res_diag['bottom_stage']}</h4>"
+                f"<b>🔍 撈底觸發訊號：</b>{res_diag['bottom_reasons']}<br>"
+                f"<b>📊 週線指標狀態：</b>週WR(14): <code>{res_diag['w_wr']}</code>｜週RSI(14): <code>{res_diag['w_rsi']}</code>｜"
+                f"週KDJ_J: <code>{res_diag['w_kdj_j']}</code>｜週CCI: <code>{res_diag['w_cci']}</code>｜"
+                f"週SAR: <code>{'🟢多頭' if res_diag['w_sar_bull'] else '🔴空頭'}</code>｜日SAR: <code>{'🟢多頭' if res_diag['d_sar_bull'] else '🔴空頭'}</code><br>"
+                f"<b>💎 估值引擎：</b>{res_diag['val_level']}｜安全邊際：<code>{res_diag['mos_pct']}%</code>｜"
+                f"合理價區間（保守/基準/樂觀）：<code>{res_diag['fair_low']} / {res_diag['fair_base']} / {res_diag['fair_high']}</code>｜方法：{res_diag['methods']}<br>"
+                f"<b>📉 下行風險與交易計劃：</b>建議止損位：<code>{res_diag['stop_loss']}</code>｜2R目標價：<code>{res_diag['target_2r']}</code>｜"
+                f"回報風險比：<code>{res_diag['reward_risk']}</code>｜歷史20日/60日(80%分位)最大回撤：<code>{res_diag['dd20_p80']}% / {res_diag['dd60_p80']}%</code>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+        # 根據選擇的顯示長度裁切繪圖數據
+        bars_map = {"6mo": 130, "1y": 252, "2y": 504, "5y": 1260}
+        plot_df = df_diag.iloc[-bars_map[period_code]:].copy()
+        if chart_tf == "週線 (1W)":
+            plot_df = plot_df.resample("W-FRI").agg({
+                "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+            }).dropna()
+
+        # TSPR 系統與技術指標計算
+        tspr_res = calc_tspr_system(plot_df, left_bars=10 if chart_tf == "日線 (1D)" else 6, right_bars=5 if chart_tf == "日線 (1D)" else 3)
+        st_data = tspr_res["stats"]
+        close_s = plot_df["close"]
+        rsi_s = calc_rsi(close_s, 14)
+        wr_s = calc_williams_r(plot_df, 14)
+        mfi_s = calc_mfi(plot_df, 14)
+        obv_s, obv_ma10_s = calc_obv(plot_df)
+        macd_s, sig_s, hist_s = calc_macd(close_s)
+        psar_s, psar_bull = calc_psar(plot_df)
+        avwap_s = calc_avwap_from_recent_low(plot_df)
+
+        # TSPR 頂部數據面板
+        st.markdown("<div class='tspr-panel'>", unsafe_allow_html=True)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("週期最高 / 最低", f"{st_data.get('cycle_high', 0):,.2f} / {st_data.get('cycle_low', 0):,.2f}")
+        m2.metric("頂部至低點跌幅", f"{st_data.get('peak_to_trough_drop_pct', 0):.2f}%", delta=f"現價距頂 {st_data.get('current_drop_from_high_pct', 0):.2f}%", delta_color="inverse")
+        m3.metric("TSPR 結構支持位", f"{st_data.get('active_support', np.nan):,.2f}" if np.isfinite(st_data.get("active_support", np.nan)) else "尋底中")
+        m4.metric("江恩 50% 中軸", f"{st_data.get('cycle_gann_50', 0):,.2f}", delta="失守" if st_data.get("below_gann_50") else "守穩", delta_color="inverse" if st_data.get("below_gann_50") else "normal")
+        m5.metric("歷次破位平均再跌", f"{st_data.get('avg_post_break_drop_pct', 0):.2f}%")
+        m6.metric("結構趨勢狀態", st_data.get("status", "N/A"))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # 繪製 5 層專業互動圖表
+        fig = make_subplots(
+            rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+            row_heights=[0.48, 0.12, 0.13, 0.14, 0.13],
+            subplot_titles=(
+                f"{diag_ticker} ({chart_tf}) K線 + TSPR支持與破位跌幅 + SAR + 江恩50%",
+                "成交量 (Volume)",
+                "OBV 能量潮 vs MA10",
+                "RSI(14) / MFI(14) / Williams %R",
+                "MACD (12, 26, 9)"
+            )
+        )
+
+        # Row 1: K線 + MA20/50 + AVWAP + SAR
+        fig.add_trace(go.Candlestick(
+            x=plot_df.index, open=plot_df["open"], high=plot_df["high"],
+            low=plot_df["low"], close=close_s,
+            increasing_line_color="#26a69a", decreasing_line_color="#ef5350", name="K線"
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=close_s.rolling(20).mean(), name="MA20", line=dict(color="#f0883e", width=1.2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=close_s.rolling(50).mean(), name="MA50", line=dict(color=C_BLUE, width=1.2)), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=plot_df.index, y=psar_s, mode="markers", name="Parabolic SAR",
+            marker=dict(size=4, color=[C_GREEN if b else C_RED for b in psar_bull])
+        ), row=1, col=1)
+        if not avwap_s.empty:
+            fig.add_trace(go.Scatter(x=avwap_s.index, y=avwap_s, name="近低點AVWAP", line=dict(color=C_PURPLE, dash="dot")), row=1, col=1)
+
+        # 江恩 50% 線與 TSPR 支持/破位標註
+        fig.add_hline(y=st_data.get("cycle_gann_50", 0), line_dash="dot", line_color=C_ORANGE,
+                      annotation_text=f"江恩50% ({st_data.get('cycle_gann_50', 0):.2f})", row=1, col=1)
+
+        for box in tspr_res["pattern_boxes"]:
+            fig.add_shape(type="rect", x0=box["start_date"], y0=box["low"], x1=box["end_date"], y1=box["high"],
+                          line=dict(color="rgba(188,140,255,0.6)", width=1, dash="dash"),
+                          fillcolor="rgba(74,20,140,0.12)", layer="below", row=1, col=1)
+
+        for s_line in tspr_res["support_lines"]:
+            fig.add_shape(type="line", x0=s_line["start_date"], y0=s_line["price"], x1=s_line["end_date"], y1=s_line["price"],
+                          line=dict(color="#ef5350" if s_line["broken"] else "#3fb950", width=1.5, dash="dash"), row=1, col=1)
+
+        for brk in tspr_res["breakdown_events"][-6:]:
+            fig.add_annotation(
+                x=brk["date"], y=brk["high"],
+                text=f"破支持 {brk['price']:.1f}<br>再跌:{brk['post_break_drop_pct']:.1f}%",
+                showarrow=True, arrowhead=2, ax=0, ay=-32,
+                bgcolor="#b71c1c", bordercolor="#ef5350", font=dict(color="white", size=9), row=1, col=1
+            )
+
+        # Row 2: 成交量
+        fig.add_trace(go.Bar(
+            x=plot_df.index, y=plot_df["volume"], name="成交量",
+            marker_color=[C_GREEN if c >= o else C_RED for c, o in zip(plot_df["close"], plot_df["open"])]
+        ), row=2, col=1)
+
+        # Row 3: OBV
+        fig.add_trace(go.Scatter(x=plot_df.index, y=obv_s, name="OBV", line=dict(color=C_BLUE, width=1.3)), row=3, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=obv_ma10_s, name="OBV MA10", line=dict(color=C_ORANGE, dash="dot")), row=3, col=1)
+
+        # Row 4: RSI / MFI / WR (將 WR 平移 +100 以便與 0-100 同軸觀察)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=rsi_s, name="RSI(14)", line=dict(color=C_ORANGE)), row=4, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=mfi_s, name="MFI(14)", line=dict(color="#26a69a")), row=4, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=wr_s + 100, name="WR(14)+100", line=dict(color=C_PURPLE, dash="dot")), row=4, col=1)
+        fig.add_hline(y=20, line_dash="dot", line_color=C_GREEN, row=4, col=1)
+        fig.add_hline(y=80, line_dash="dot", line_color=C_RED, row=4, col=1)
+
+        # Row 5: MACD
+        fig.add_trace(go.Bar(x=plot_df.index, y=hist_s, name="MACD柱", marker_color=[C_GREEN if x >= 0 else C_RED for x in hist_s.fillna(0)]), row=5, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=macd_s, name="MACD", line=dict(color=C_BLUE)), row=5, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=sig_s, name="Signal", line=dict(color=C_ORANGE)), row=5, col=1)
+
+        fig.update_layout(height=1000, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 江恩 / 斐波那契 / 高點回撤 關鍵撈底價位對照表
+        st.markdown("#### 📐 江恩比率 / 斐波那契回調 / 高點回撤 關鍵候位表（52週高低波段）")
+        high_52 = float(df_diag["high"].iloc[-252:].max()) if len(df_diag) >= 252 else float(df_diag["high"].max())
+        low_52 = float(df_diag["low"].iloc[-252:].min()) if len(df_diag) >= 252 else float(df_diag["low"].min())
+        diff_52 = high_52 - low_52
+
+        col_t1, col_t2, col_t3 = st.columns(3)
+        with col_t1:
+            st.markdown("**1️⃣ 52週高點回撤價位**")
+            st.dataframe(pd.DataFrame([
+                {"回撤幅度": f"-{int(v*100)}%", "目標價位": round(high_52 * (1 - v), 2), "距現價%": f"{(high_52*(1-v)/close_s.iloc[-1]-1)*100:+.1f}%"}
+                for v in DROP_LEVELS
+            ]), hide_index=True, use_container_width=True)
+        with col_t2:
+            st.markdown("**2️⃣ 斐波那契黃金分割位**")
+            st.dataframe(pd.DataFrame([
+                {"黃金比率": f"{v:.3f}", "支撐價位": round(high_52 - diff_52 * v, 2), "距現價%": f"{((high_52 - diff_52 * v)/close_s.iloc[-1]-1)*100:+.1f}%"}
+                for v in FIB_LEVELS
+            ]), hide_index=True, use_container_width=True)
+        with col_t3:
+            st.markdown("**3️⃣ 江恩八分/三分回調位**")
+            st.dataframe(pd.DataFrame([
+                {"江恩比例": f"{v*100:.1f}%", "支撐價位": round(high_52 - diff_52 * v, 2), "距現價%": f"{((high_52 - diff_52 * v)/close_s.iloc[-1]-1)*100:+.1f}%"}
+                for v in GANN_LEVELS
+            ]), hide_index=True, use_container_width=True)
+
+
+# ==================== Tab 3: 倉位計算機 & 歷史回測 ====================
+with tabs[2]:
+    col_p, col_b = st.columns([1, 1])
+
+    with col_p:
+        st.subheader("⚖️ 撈底倉位與止損風險計算機")
+        account_size = st.number_input("總資金規模 (USD / HKD)", min_value=1000.0, value=100000.0, step=5000.0)
+        risk_pct = st.slider("單筆交易最大承受總資金虧損 (%)", 0.25, 3.0, 1.0, 0.25) / 100.0
+        max_notional = st.slider("單一持倉最高佔總資金比例 (%)", 5, 35, 15) / 100.0
+        pos_ticker = st.text_input("計劃撈底股票代號", "ADBE", key="pos_tk").strip().upper()
+
+        df_p = fetch_ohlcv(pos_ticker, period="1y")
+        if df_p is not None and len(df_p) >= 30:
+            cur_p = safe_float(df_p["close"].iloc[-1])
+            tspr_p = calc_tspr_system(df_p)
+            down_p = downside_engine(df_p, tspr_p)
+            stop_p = down_p["invalidation"]
+            shares, notional, max_loss = calculate_position(cur_p, stop_p, account_size, risk_pct, max_notional)
+            target_p = cur_p + 2 * (cur_p - stop_p)
+
+            p1, p2, p3 = st.columns(3)
+            p1.metric("建議買入股數", f"{shares:,} 股")
+            p2.metric("預計投入金額", f"${notional:,.0f}")
+            p3.metric("觸及止損最大虧損", f"${min(max_loss, shares * max(0, cur_p - stop_p)):,.0f}")
+
+            p4, p5, p6 = st.columns(3)
+            p4.metric("現價", f"{cur_p:.2f}")
+            p5.metric("結構/ATR 止損位", f"{stop_p:.2f} ({(stop_p/cur_p-1)*100:.1f}%)")
+            p6.metric("2R 目標價", f"{target_p:.2f} (+{(target_p/cur_p-1)*100:.1f}%)")
+
+    with col_b:
+        st.subheader("🧪 歷史撈底訊號追蹤回測")
+        try:
+            with sqlite3.connect(DB_FILE, timeout=30) as conn:
+                sig_df = pd.read_sql_query("SELECT * FROM signals ORDER BY signal_date DESC LIMIT 100", conn)
+        except Exception:
+            sig_df = pd.DataFrame()
+
+        if sig_df.empty:
+            st.info("目前資料庫尚無已觸發的「🟢 右側確認可撈」歷史訊號，每次掃描遇到符合條件的標的將自動寫入。")
+        else:
+            st.dataframe(sig_df[["signal_date", "ticker", "decision", "total_score", "price", "stop_loss", "target_2r"]],
+                         use_container_width=True, hide_index=True, height=220)
+            hold_d = st.selectbox("回測最長持有交易日", [10, 20, 30, 45], index=1)
+            if st.button("執行歷史訊號回測"):
+                bt_res = run_walk_forward_backtest(sig_df, hold_days=hold_d)
+                st.dataframe(bt_res, use_container_width=True, hide_index=True)
+                valid_bt = bt_res[bt_res["納入統計"]] if not bt_res.empty and "納入統計" in bt_res.columns else pd.DataFrame()
+                if not valid_bt.empty:
+                    b1, b2, b3 = st.columns(3)
+                    b1.metric("已結算筆數", len(valid_bt))
+                    b2.metric("勝率", f"{(valid_bt['淨回報%'] > 0).mean()*100:.1f}%")
+                    b3.metric("平均淨回報", f"{valid_bt['淨回報%'].mean():.2f}%")
+
+
+# ==================== Tab 4: 股票池管理 & 系統日誌 ====================
+with tabs[3]:
+    st.subheader("🛠️ 宏觀指標、永久觀察池與系統健康日誌")
+    if st.button("🔄 更新宏觀市場指標 (VIX / 恒指 / 標普 / 美債)"):
+        st.session_state["macro_data"] = fetch_macro()
+
+    macro_d = st.session_state.get("macro_data", {})
+    if macro_d:
+        m_cols = st.columns(len(macro_d))
+        for col, (k, v) in zip(m_cols, macro_d.items()):
+            col.metric(k, f"{v['val']:.2f}" if np.isfinite(v["val"]) else "N/A",
+                       f"{v['chg']:+.2f}%" if np.isfinite(v["chg"]) else None)
+
+    st.markdown("---")
+    c_left, c_right = st.columns([1, 1])
+    with c_left:
+        st.markdown("#### 📌 目前永久核心觀察名單")
+        perm_list = permanent_tickers()
+        st.code(", ".join(perm_list))
+        st.download_button("匯出永久名單 (.txt)", "\n".join(perm_list), file_name="watchlist.txt")
+
+    with c_right:
+        st.markdown("#### 📋 執行日誌（自動降級紀錄，不阻斷主程式）")
+        logs = st.session_state.get("error_log", [])
+        if logs:
+            st.dataframe(pd.DataFrame(logs).iloc[::-1], use_container_width=True, hide_index=True)
+            if st.button("清除日誌"):
+                clear_errors()
+                st.rerun()
+        else:
+            st.success("目前無任何異常紀錄，所有模組運作順暢！")
