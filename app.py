@@ -372,6 +372,151 @@ def calc_avwap_from_recent_low(df, lookback=60):
 
 # ==================== V4.7 新增：江恩光陰（時間價位）+ 三雲趨勢 + VQC + 蓄勢與動能波模組 ====================
 def calc_gann_time_and_cloud_system(df, direction="auto", manual_scale=0.0):
+    # ==================== V4.8 新增：江恩轉勢日預測引擎 (Gann Turn Date Predictor) ====================
+def predict_gann_turn_dates(df, forward_trading_days=45):
+    """
+    預測未來 N 個交易日內的潛在江恩轉勢日（時間周期共振系統）：
+    1. 波段重要高低點起算交易日循環 (15, 21, 30, 45, 60, 72, 90, 120, 144)
+    2. 自然日循環 (30, 45, 60, 90, 120, 180, 360 日)
+    3. 黃金時間分割 (以上一段主要波段耗時 T 推算 0.5T, 0.618T, 1.0T, 1.382T, 1.618T)
+    4. 江恩季節性四方形轉折日 (春分/夏至/秋分/冬至及45度節氣點，允許 ±1 交易日誤差)
+    """
+    if df is None or len(df) < 60:
+        return {"next_turn_date": None, "top_turns": [], "all_calendar": pd.DataFrame(), "pivots": []}
+
+    highs = df["high"].values
+    lows = df["low"].values
+    dates = pd.DatetimeIndex(df.index)
+    n = len(df)
+    last_date = dates[-1]
+
+    # 1. 尋找過去 180 日內最具代表性的波段轉折點（Pivot Highs & Pivot Lows）
+    lookback = min(n, 180)
+    sub_df = df.iloc[-lookback:]
+    offset = n - lookback
+    pivots = []
+
+    order = 7
+    for i in range(order, len(sub_df) - order):
+        g_idx = offset + i
+        w_high = highs[g_idx - order: g_idx + order + 1]
+        w_low = lows[g_idx - order: g_idx + order + 1]
+        if highs[g_idx] == np.nanmax(w_high):
+            pivots.append({"idx": g_idx, "date": dates[g_idx], "price": float(highs[g_idx]), "type": "波段頂部"})
+        elif lows[g_idx] == np.nanmin(w_low):
+            pivots.append({"idx": g_idx, "date": dates[g_idx], "price": float(lows[g_idx]), "type": "波段底部"})
+
+    # 確保包含區間絕對最高點與最低點
+    abs_hi_idx = offset + int(np.nanargmax(sub_df["high"].values))
+    abs_lo_idx = offset + int(np.nanargmin(sub_df["low"].values))
+    if not any(p["idx"] == abs_hi_idx for p in pivots):
+        pivots.append({"idx": abs_hi_idx, "date": dates[abs_hi_idx], "price": float(highs[abs_hi_idx]), "type": "區間最高點"})
+    if not any(p["idx"] == abs_lo_idx for p in pivots):
+        pivots.append({"idx": abs_lo_idx, "date": dates[abs_lo_idx], "price": float(lows[abs_lo_idx]), "type": "區間最低點"})
+
+    # 去重並按時間排序
+    pivots = sorted({p["idx"]: p for p in pivots}.values(), key=lambda x: x["idx"])
+
+    # 計算最近一段完整波段耗時 T（交易日數）
+    wave_duration = abs(abs_hi_idx - abs_lo_idx)
+    if wave_duration < 8:
+        wave_duration = 20
+
+    # 生成未來交易日曆（跳過週末）
+    future_bdays = pd.bdate_range(start=last_date + timedelta(days=1), periods=forward_trading_days)
+
+    # 江恩標準交易日周期與權重
+    trading_cycles = {
+        15: ("15日短周期", 1.5),
+        21: ("21日費氏周期", 2.0),
+        30: ("30日江恩月循環", 2.5),
+        45: ("45日江恩1/8圓周", 3.5),
+        60: ("60日江恩1/6圓周", 3.0),
+        72: ("72日江恩1/5圓周", 3.5),
+        90: ("90日江恩季度90°", 4.5),
+        120: ("120日江恩1/3圓周", 3.5),
+        144: ("144日江恩大周期", 5.0),
+    }
+
+    # 黃金時間分割周期
+    fib_time_ratios = [
+        (0.500, "0.5T 時間中軸", 2.5),
+        (0.618, "0.618T 黃金時間比", 3.5),
+        (1.000, "1.0T 等長周期共振", 4.5),
+        (1.382, "1.382T 擴展周期", 3.0),
+        (1.618, "1.618T 黃金擴展", 4.0),
+    ]
+
+    # 自然日周期
+    calendar_cycles = [30, 45, 60, 90, 120, 180, 360]
+
+    # 江恩季節性四方形轉折日 (月, 日)
+    gann_seasonal_dates = [
+        (2, 4, "立春(45°節氣)"), (3, 21, "春分(0°起點)"),
+        (5, 5, "立夏(45°節氣)"), (6, 21, "夏至(90°轉折)"),
+        (8, 7, "立秋(45°節氣)"), (9, 22, "秋分(180°對沖)"),
+        (11, 7, "立冬(45°節氣)"), (12, 21, "冬至(270°轉折)")
+    ]
+
+    calendar_records = []
+    for step, f_date in enumerate(future_bdays, start=1):
+        future_global_idx = (n - 1) + step
+        score = 0.0
+        reasons = []
+
+        # A. 檢查所有歷史波段轉折點起算的交易日循環
+        for pv in pivots[-5:]:  # 取最近 5 個重要高低點
+            elapsed_td = future_global_idx - pv["idx"]
+            if elapsed_td in trading_cycles:
+                c_name, w = trading_cycles[elapsed_td]
+                score += w
+                reasons.append(f"由{pv['date'].strftime('%m-%d')}{pv['type']}({pv['price']:.1f})起算 {c_name}")
+
+            # B. 檢查自然日循環 (允許 ±1 日容差)
+            elapsed_cd = (f_date - pv["date"]).days
+            for cc in calendar_cycles:
+                if abs(elapsed_cd - cc) <= 1:
+                    score += 2.0
+                    reasons.append(f"由{pv['date'].strftime('%m-%d')}{pv['type']}起算 {cc}自然日")
+                    break
+
+        # C. 檢查最近高低點的黃金時間分割 (T)
+        latest_pivot = pivots[-1] if pivots else {"idx": n - 1, "date": last_date, "price": float(df["close"].iloc[-1]), "type": "近期轉折"}
+        elapsed_from_latest = future_global_idx - latest_pivot["idx"]
+        for ratio, r_label, w in fib_time_ratios:
+            target_td = int(round(wave_duration * ratio))
+            if target_td >= 8 and elapsed_from_latest == target_td:
+                score += w
+                reasons.append(f"前浪({wave_duration}日) × {r_label} (T+{target_td})")
+
+        # D. 檢查江恩季節性四方形轉折日
+        for m, d, s_label in gann_seasonal_dates:
+            seasonal_dt = pd.Timestamp(year=f_date.year, month=m, day=d)
+            if abs((f_date - seasonal_dt).days) <= 1:
+                score += 3.5
+                reasons.append(f"江恩四方形節氣：{s_label}")
+
+        calendar_records.append({
+            "預測轉勢日期": f_date.strftime("%Y-%m-%d"),
+            "星期": ["一", "二", "三", "四", "五", "六", "日"][f_date.weekday()],
+            "距離今日(交易日)": f"T+{step}",
+            "共振強度分": round(score, 1),
+            "共振級別": "🔥 極高共振 (重點變盤)" if score >= 6.5 else ("⚡ 中高共振 (關注轉折)" if score >= 3.5 else "⚪ 一般時間窗"),
+            "時間周期依據": " ｜ ".join(reasons) if reasons else "無明顯時間共振"
+        })
+
+    cal_df = pd.DataFrame(calendar_records)
+    hit_df = cal_df[cal_df["共振強度分"] > 0].sort_values(["共振強度分", "預測轉勢日期"], ascending=[False, True])
+    top_turns = hit_df.head(5).to_dict(orient="records")
+    next_turn = top_turns[0] if top_turns else None
+
+    return {
+        "next_turn_date": next_turn,
+        "top_turns": top_turns,
+        "all_calendar": cal_df,
+        "pivots": pivots,
+        "wave_duration": wave_duration
+    }
     """
     復刻 QuantStockLab AI 小龍江恩光陰（時間價位）系統：
     1. 三雲趨勢 (Triple Cloud): 短/中/長三層 EMA 動態多空雲帶
