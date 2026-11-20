@@ -28,7 +28,7 @@ try:
 except ImportError:
     PDF_AVAILABLE = False
 
-st.set_page_config(page_title="📈 股票監察系統 Pro+ V4.6 (TSPR 跌幅與江恩資金確認版)", page_icon="📈", layout="wide")
+st.set_page_config(page_title="📈 股票監察系統 Pro+ V4.7 (TSPR + 江恩光陰三雲動能版)", page_icon="📈", layout="wide")
 
 C_RED = "#f85149"
 C_GREEN = "#3fb950"
@@ -38,8 +38,8 @@ C_PURPLE = "#bc8cff"
 C_GREY = "#8b949e"
 C_BG = "#0d1117"
 
-APP_VERSION = "V4.6-TSPR-DropMetrics-Gann-OBV"
-MODEL_VERSION = "decision-v4.6-tspr"
+APP_VERSION = "V4.7-TSPR-GannTime-TripleCloud-VQC"
+MODEL_VERSION = "decision-v4.7-tspr-gann"
 AUTO_REFRESH_SEC = 1800
 OHLCV_TTL = 1800
 INFO_TTL = 3600
@@ -56,14 +56,14 @@ HK_WATCHLIST = [
     "1299.HK", "0001.HK", "9988.HK", "0175.HK", "0027.HK", "2628.HK",
     "0011.HK", "0688.HK", "3690.HK", "9618.HK", "0981.HK", "9999.HK",
     "2382.HK", "0291.HK", "1211.HK", "0267.HK", "2688.HK", "0762.HK",
-    "6862.HK", "0960.HK", "2020.HK", "1810.HK", "1024.HK", "3033.HK"
+    "6862.HK", "0960.HK", "2020.HK", "1810.HK", "1024.HK", "3033.HK", "2800.HK"
 ]
 
 US_WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
     "ORCL", "ASML", "AMD", "QCOM", "INTC", "AMAT", "LRCX", "MU",
     "JPM", "BAC", "GS", "MS", "BRK-B", "COST", "WMT", "HD", "JNJ",
-    "UNH", "PFE", "XOM", "NEE", "UBER", "LITE", "CLX", "NFLX"
+    "UNH", "PFE", "XOM", "NEE", "UBER", "LITE", "CLX", "NFLX", "ADBE", "CRM"
 ]
 
 ETF_TICKERS = {"SPY", "QQQ", "SOXL", "IWM", "3033.HK", "2800.HK", "2828.HK"}
@@ -85,7 +85,7 @@ SECTOR_MAP_FALLBACK = {
     "0001.HK": "HK_PROPERTY", "0083.HK": "HK_PROPERTY",
     "0700.HK": "HK_TECH", "9988.HK": "HK_TECH", "3690.HK": "HK_TECH",
     "9618.HK": "HK_TECH", "9999.HK": "HK_TECH", "1810.HK": "HK_TECH",
-    "3033.HK": "HK_TECH_ETF"
+    "3033.HK": "HK_TECH_ETF", "2800.HK": "HK_INDEX_ETF"
 }
 
 st.markdown("""
@@ -370,19 +370,153 @@ def calc_avwap_from_recent_low(df, lookback=60):
     return avwap
 
 
+# ==================== V4.7 新增：江恩光陰（時間價位）+ 三雲趨勢 + VQC + 蓄勢與動能波模組 ====================
+def calc_gann_time_and_cloud_system(df, direction="auto", manual_scale=0.0):
+    """
+    復刻 QuantStockLab AI 小龍江恩光陰（時間價位）系統：
+    1. 三雲趨勢 (Triple Cloud): 短/中/長三層 EMA 動態多空雲帶
+    2. 江恩扇形線 (Gann Fan 時間價位角度線): 計算價格/時間斜率與 1x1, 1x2, 2x1, 1x3, 3x1 等射線
+    3. VQC 量價異動標記: 相對成交量 (RVOL >= 1.8x) 爆發訊號
+    4. 蓄勢與動能波 (Momentum & Squeeze Wave): 紅綠動能柱 + 黃點(蓄勢)/青點(爆發)
+    """
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    vol = df["volume"]
+    n = len(df)
+
+    # 1. 三雲趨勢 (Triple Cloud)
+    ema_fast_1 = close.ewm(span=5, adjust=False).mean()
+    ema_fast_2 = close.ewm(span=13, adjust=False).mean()
+    ema_mid_1 = close.ewm(span=21, adjust=False).mean()
+    ema_mid_2 = close.ewm(span=34, adjust=False).mean()
+    ema_slow_1 = close.ewm(span=55, adjust=False).mean()
+    ema_slow_2 = close.ewm(span=89, adjust=False).mean()
+
+    cloud_bullish = bool(ema_fast_1.iloc[-1] > ema_mid_1.iloc[-1] > ema_slow_1.iloc[-1])
+
+    # 2. VQC 相對成交量異動 (RVOL)
+    vol_ma20 = vol.rolling(20).mean()
+    rvol = vol / vol_ma20.replace(0, np.nan)
+    vqc_mask = (rvol >= 1.8) & (vol > 0)
+    vqc_dates = df.index[vqc_mask].tolist()
+    vqc_prices = high[vqc_mask].tolist()
+
+    # 3. 蓄勢與動能波 (Momentum Wave + Squeeze Dots)
+    # 動能值：類似 TTM Squeeze / 線性回歸動能
+    highest_20 = high.rolling(20).max()
+    lowest_20 = low.rolling(20).min()
+    mid_donchian = (highest_20 + lowest_20) / 2.0
+    sma_20 = close.rolling(20).mean()
+    mom_wave = (close - (mid_donchian + sma_20) / 2.0) / close.replace(0, np.nan) * 100.0
+
+    # 蓄勢狀態判斷：布林帶寬度收窄至 Keltner Channel 內 (黃點=蓄勢，青點=爆發)
+    bb_std = close.rolling(20).std()
+    bb_upper = sma_20 + 2.0 * bb_std
+    bb_lower = sma_20 - 2.0 * bb_std
+    atr_20 = calc_atr(df, 20)
+    kc_upper = sma_20 + 1.5 * atr_20
+    kc_lower = sma_20 - 1.5 * atr_20
+    squeeze_on = (bb_lower > kc_lower) & (bb_upper < kc_upper)
+
+    # 4. 江恩扇形線 (Gann Fan 時間價位)
+    lookback = min(n, 140)
+    sub_df = df.iloc[-lookback:]
+    offset_idx = n - lookback
+
+    if direction == "down":
+        anchor_rel = int(np.argmax(sub_df["high"].values))
+        anchor_price = float(sub_df["high"].iloc[anchor_rel])
+        is_down = True
+    elif direction == "up":
+        anchor_rel = int(np.argmin(sub_df["low"].values))
+        anchor_price = float(sub_df["low"].iloc[anchor_rel])
+        is_down = False
+    else:
+        # 自動模式：若現價低於期間中位數且近期從高位回落，採用向下扇形（如截圖）；否則向上扇形
+        hi_rel = int(np.argmax(sub_df["high"].values))
+        lo_rel = int(np.argmin(sub_df["low"].values))
+        if hi_rel < lo_rel and close.iloc[-1] < sub_df["high"].iloc[hi_rel] * 0.96:
+            anchor_rel = hi_rel
+            anchor_price = float(sub_df["high"].iloc[hi_rel])
+            is_down = True
+        else:
+            anchor_rel = lo_rel
+            anchor_price = float(sub_df["low"].iloc[lo_rel])
+            is_down = False
+
+    anchor_idx = offset_idx + anchor_rel
+    bars_elapsed = max(1, (n - 1) - anchor_idx)
+
+    # 計算價格/根斜率 (Scale: Price per Bar)
+    if manual_scale > 0:
+        price_per_bar = float(manual_scale)
+    else:
+        # 採用江恩波動率基準：以錨點波幅與時間自然比率估算 1x1 速度
+        swing_span = float(sub_df["high"].max() - sub_df["low"].min())
+        price_per_bar = round(swing_span / max(20, lookback * 0.75), 6)
+
+    sign = -1.0 if is_down else 1.0
+    gann_ratios = [
+        ("4x1", 4.0),
+        ("3x1", 3.0),
+        ("2x1", 2.0),
+        ("1x1 (45°主線)", 1.0),
+        ("1x2", 0.5),
+        ("1x3", 1.0 / 3.0),
+        ("1x4", 0.25),
+    ]
+
+    x_range = np.arange(anchor_idx, n)
+    t_steps = x_range - anchor_idx
+    fan_lines = []
+    current_gann_1x1 = anchor_price + sign * price_per_bar * (n - 1 - anchor_idx)
+
+    for label, mult in gann_ratios:
+        y_vals = anchor_price + sign * (price_per_bar * mult) * t_steps
+        fan_lines.append({
+            "label": label,
+            "mult": mult,
+            "dates": df.index[anchor_idx:],
+            "values": y_vals,
+            "current_val": float(y_vals[-1])
+        })
+
+    # 5. 江恩時間循環（光陰節點：由錨點起算 15, 30, 45, 60, 90, 120 交易日）
+    gann_time_cycles = [15, 30, 45, 60, 90, 120]
+    time_markers = []
+    for c_days in gann_time_cycles:
+        target_i = anchor_idx + c_days
+        if target_i < n:
+            time_markers.append({"days": c_days, "date": df.index[target_i], "status": "已發生"})
+    next_cycle = next((c for c in gann_time_cycles if c > bars_elapsed), None)
+    days_to_next_cycle = (next_cycle - bars_elapsed) if next_cycle else 0
+
+    return {
+        "ema_fast_1": ema_fast_1, "ema_fast_2": ema_fast_2,
+        "ema_mid_1": ema_mid_1, "ema_mid_2": ema_mid_2,
+        "ema_slow_1": ema_slow_1, "ema_slow_2": ema_slow_2,
+        "cloud_bullish": cloud_bullish,
+        "rvol_now": float(rvol.iloc[-1]) if np.isfinite(rvol.iloc[-1]) else 1.0,
+        "vqc_dates": vqc_dates,
+        "vqc_prices": vqc_prices,
+        "mom_wave": mom_wave,
+        "squeeze_on": squeeze_on,
+        "gann_direction": "向下設定" if is_down else "向上設定",
+        "anchor_date": df.index[anchor_idx],
+        "anchor_price": round(anchor_price, 3),
+        "price_per_bar": price_per_bar,
+        "bars_elapsed": bars_elapsed,
+        "current_gann_1x1": round(current_gann_1x1, 3),
+        "fan_lines": fan_lines,
+        "time_markers": time_markers,
+        "next_cycle": next_cycle,
+        "days_to_next_cycle": days_to_next_cycle
+    }
+
+
 # ==================== V4.6 升級：TSPR 10日支持位 + 下跌幅度計算 + 江恩50%/OBV/MFI 確認模組 ====================
 def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3, require_filter=False):
-    """
-    計算 TSPR (Trend & Support Pattern Recognition) V4.6
-    1. 捕捉 10日結構支持位 (Pivot Low)
-    2. 檢測收市跌穿 10日支持位 -> 同步驗證：
-       - 江恩 50% 分水嶺 (波段前低至波段前高的 50% 中軸)
-       - OBV 能量潮是否跌穿 10日均線 / MFI(14) 是否低於 50
-    3. 精確計算每次破位的「下跌幅度」：
-       - 破位後最大跌幅 (%) 與跌點 (由破位收市價計至下一波段最低點)
-       - 波段頂部至低點總跌幅 (%) (由破位前波段最高位計至波段最低點)
-       - 下跌持續交易日數
-    """
     if df is None or len(df) < left_bars + right_bars + 5:
         return {
             "active_support": np.nan, "is_broken": False, "status": "資料不足",
@@ -416,14 +550,12 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
         window_lows = lows[pivot_idx - left_bars: i + 1]
         left_window = lows[pivot_idx - left_bars: pivot_idx]
 
-        # 1. 確認 10 日波段低點 (Pivot Low)
         if (
             np.isfinite(lows[pivot_idx])
             and lows[pivot_idx] == np.nanmin(window_lows)
             and lows[pivot_idx] < np.nanmin(left_window)
             and (pivot_idx - last_pivot_idx) >= right_bars
         ):
-            # 若上一個破位事件正在進行，先結算該次破位至新低點之間的「最終下跌幅度」
             if breakdown_events and breakdown_events[-1].get("end_idx") is None:
                 last_brk = breakdown_events[-1]
                 b_idx = last_brk["idx"]
@@ -457,16 +589,13 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
                 "price": active_support
             })
 
-        # 2. 檢測收市價是否跌穿當前生效的 10 日支持位
         if active_support is not None and not is_broken and i > support_start_idx:
             if closes[i] < active_support:
-                # 計算破位前波段最高位與江恩 50% 分水嶺
                 lookback_start = max(0, support_start_idx - 30)
                 wave_high = float(np.nanmax(highs[lookback_start: i + 1]))
                 wave_low = float(np.nanmin(lows[lookback_start: support_start_idx + 1]))
                 gann_50_level = wave_low + (wave_high - wave_low) * 0.50
 
-                # 檢查江恩 50% 與 OBV/MFI 資金流確認
                 gann_broken = closes[i] <= gann_50_level
                 obv_weak = (
                     np.isfinite(obv_vals[i]) and np.isfinite(obv_ma10_vals[i]) and obv_vals[i] < obv_ma10_vals[i]
@@ -474,7 +603,6 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
                 mfi_weak = np.isfinite(mfi_vals[i]) and mfi_vals[i] < 50.0
                 flow_confirmed = bool(obv_weak or mfi_weak)
 
-                # 若開啟嚴格過濾，則要求必須跌穿江恩50%或資金流轉弱才算正式破位
                 if require_filter and not (gann_broken or flow_confirmed):
                     continue
 
@@ -514,7 +642,6 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
                     "broken": True
                 })
 
-    # 結算最後一個尚未結束的破位事件（計算截至最新交易日的下跌幅度）
     if breakdown_events and breakdown_events[-1].get("end_idx") is None:
         last_brk = breakdown_events[-1]
         b_idx = last_brk["idx"]
@@ -538,7 +665,6 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
             "broken": False
         })
 
-    # 建立多段週期紫色形態箱體 (Pattern Boxes) + 計算每個箱體的頂底跌幅
     pattern_boxes = []
     for b in range(num_boxes):
         end_idx = n - b * box_period
@@ -557,7 +683,6 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
             "drop_pct": round(b_drop_pct, 2)
         })
 
-    # 計算當前週期量化面板統計（包含圖二所有下跌幅度與江恩50%指標）
     recent_len = min(box_period, n)
     recent_df = df.iloc[-recent_len:]
     cycle_high = float(recent_df["high"].max())
@@ -565,24 +690,18 @@ def calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65, num_boxes=3,
     cycle_range = cycle_high - cycle_low
     current_price = float(closes[-1])
 
-    # 1. 週期頂部至低點最大跌幅 (%) (對應圖二「頂部至低點跌幅」)
     peak_to_trough_drop_pct = ((cycle_low - cycle_high) / cycle_high * 100) if cycle_high > 0 else 0.0
-    # 2. 現價距離週期頂部下跌幅度 (%)
     current_drop_from_high_pct = ((current_price - cycle_high) / cycle_high * 100) if cycle_high > 0 else 0.0
-    # 3. 調整比率 (現價在整個週期波幅中的回調比例 %)
     retracement_ratio_pct = ((cycle_high - current_price) / cycle_range * 100) if cycle_range > 0 else 0.0
-    # 4. 江恩 50% 中軸位與黃金分割 1.236 倍目標位
     cycle_gann_50 = cycle_low + cycle_range * 0.50
     fib_1236_up = cycle_low + cycle_range * 1.236
     fib_1236_down = cycle_high - cycle_range * 1.236
 
-    # 5. 若當前處於跌穿 10 日支持狀態，計算自跌穿日起算的已下跌幅度 (%)
     active_post_break_drop_pct = 0.0
     if is_broken and breakdown_events:
         latest_brk = breakdown_events[-1]
         active_post_break_drop_pct = round((current_price / latest_brk["price"] - 1) * 100, 2)
 
-    # 6. 歷史破位平均再跌幅度 (%)
     avg_post_break_drop_pct = (
         round(float(np.mean([x["post_break_drop_pct"] for x in breakdown_events])), 2)
         if breakdown_events else 0.0
@@ -833,8 +952,9 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     vol_z = volume_zscore(df)
     rs60 = calc_relative_strength(df, benchmark_df, 60)
 
-    # 計算 TSPR V4.6 (含下跌幅度、江恩50%及OBV/MFI確認)
+    # 計算 TSPR V4.6 + 江恩光陰/三雲 V4.7
     tspr = calc_tspr_system(df, left_bars=10, right_bars=5, box_period=65)
+    gann_cloud = calc_gann_time_and_cloud_system(df)
     tspr_sup = tspr["active_support"]
     tspr_broken = tspr["is_broken"]
     tspr_status = tspr["status"]
@@ -845,6 +965,7 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     cycle_drop_pct = st_stats.get("current_drop_from_high_pct", 0.0)
     peak_to_trough_drop_pct = st_stats.get("peak_to_trough_drop_pct", 0.0)
     post_break_drop_pct = st_stats.get("active_post_break_drop_pct", 0.0)
+    cloud_status = "🟢 三雲多頭" if gann_cloud["cloud_bullish"] else "🔴 三雲空頭"
 
     sector = get_sector_from_info(ticker, info)
     quality_flags, quality_blockers, quality_penalty = quality_filter(info, sector)
@@ -853,7 +974,6 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     undervaluation = classify_undervaluation(val_score, quality_blockers)
 
     liquidity_20d = safe_float((df["close"] * df["volume"]).rolling(20).mean().iloc[-1], 0)
-    eligibility = []
     blockers = list(quality_blockers) if ticker not in ETF_TICKERS else []
     if price <= 0:
         blockers.append("現價無效")
@@ -861,10 +981,6 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
         blockers.append("成交額資料不足")
     if atr <= 0:
         blockers.append("ATR 資料不足，無法設定風險")
-    if ticker in ETF_TICKERS:
-        eligibility.append("ETF：不使用企業基本面品質否決規則")
-    else:
-        eligibility.append("價格、成交量和風險資料基本可用")
 
     oversold = 0
     oversold_reasons = []
@@ -884,16 +1000,16 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
     confirm_score = 0
     confirmation_price = max(high5, safe_float(ma20.iloc[-1], price))
     if price >= avwap_now:
-        confirm_score += 16
+        confirm_score += 14
         confirmation.append("站上近 60 日低點 Anchored VWAP")
     if price >= safe_float(ma20.iloc[-1], price):
-        confirm_score += 14
-        confirmation.append("收復 MA20")
-    if safe_float(ma20.iloc[-1]) > safe_float(ma20.iloc[-5], np.inf):
-        confirm_score += 10
-        confirmation.append("MA20 開始上彎")
-    if safe_float(macd.iloc[-1]) > safe_float(macd_signal.iloc[-1]):
         confirm_score += 12
+        confirmation.append("收復 MA20")
+    if gann_cloud["cloud_bullish"]:
+        confirm_score += 12
+        confirmation.append("三雲趨勢呈多頭排列")
+    if safe_float(macd.iloc[-1]) > safe_float(macd_signal.iloc[-1]):
+        confirm_score += 10
         confirmation.append("MACD 金叉")
     if cmf > 0 and obv_bullish and mfi_now >= 50:
         confirm_score += 14
@@ -905,14 +1021,14 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
         confirm_score += 10
         confirmation.append("量價確認")
     if not np.isnan(rs60) and rs60 > 0:
-        confirm_score += 10
+        confirm_score += 8
         confirmation.append(f"60 日相對強弱 +{rs60:.1f}%")
     if not np.isnan(tspr_sup) and not tspr_broken:
-        confirm_score += 14
+        confirm_score += 12
         confirmation.append(f"守穩 TSPR 10日支持 ({tspr_sup:.2f})")
     if not below_gann_50 and not np.isnan(cycle_gann_50):
-        Confirmation_gann = f"守穩週期江恩50% ({cycle_gann_50:.2f})"
-        confirmation.append(Confirmation_gann)
+        confirm_score += 8
+        confirmation.append(f"守穩週期江恩50% ({cycle_gann_50:.2f})")
     confirm_score = min(100, confirm_score)
 
     trend_risk = 0
@@ -989,7 +1105,8 @@ def decision_engine(ticker, df, info, regime, benchmark_df):
         "ticker": ticker, "name": info.get("name", ticker), "sector": sector,
         "price": round(price, 3), "last_bar": str(pd.Timestamp(df.index[-1]).date()),
         "decision": decision, "next_step": next_step, "final_score": round(final_score, 1),
-        "tspr_status": tspr_status, "tspr_support": tspr_sup, "gann_50": cycle_gann_50,
+        "tspr_status": tspr_status, "cloud_status": cloud_status,
+        "tspr_support": tspr_sup, "gann_50": cycle_gann_50,
         "cycle_drop_pct": cycle_drop_pct, "peak_to_trough_drop_pct": peak_to_trough_drop_pct,
         "post_break_drop_pct": post_break_drop_pct, "fib_1236": fib_1236,
         "valuation_score": round(val_score, 1), "undervaluation": undervaluation,
@@ -1122,7 +1239,7 @@ with st.sidebar:
     market = st.radio("市場", ["🇭🇰 港股", "🇺🇸 美股", "📋 自選"], index=0)
     custom_input = ""
     if market == "📋 自選":
-        custom_input = st.text_area("輸入代碼（每行一個）", "^HSI\n3033.HK\n^NDX\n0700.HK\nNVDA")
+        custom_input = st.text_area("輸入代碼（每行一個）", "^HSI\n2800.HK\n3033.HK\n^NDX\n0700.HK\nNVDA")
     view_mode = st.radio("顯示模式", ["新手模式", "進階模式"], index=0)
     if quote_ctx:
         st.success("✅ 富途已連接：優先使用日線報價")
@@ -1140,12 +1257,12 @@ macro_data = fetch_macro()
 regime = classify_market_state(market if market != "📋 自選" else "🇺🇸 美股", macro_data)
 benchmark_df = fetch_ohlcv(regime["benchmark"], period="2y")
 
-st.markdown("# 📈 股票監察系統 Pro+｜V4.6 TSPR 跌幅量化與江恩資金確認版")
+st.markdown("# 📈 股票監察系統 Pro+｜V4.7 TSPR 跌幅量化 + 江恩光陰三雲動能版")
 st.caption(f"模型：{MODEL_VERSION}｜程式版本：{APP_VERSION}｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
 st.warning("本系統用於研究與風險管理，不構成投資建議。任何「可小量試倉」都不是預測見底或保證收益；必須以可執行價格、10日結構支持止損與組合風險為準。")
 
 tabs = st.tabs([
-    "🌍 市場氣氛", "📊 決策掃描", "💎 估值候選", "📈 技術圖表 (含TSPR及跌幅統計)", "📐 回撤/江恩",
+    "🌍 市場氣氛", "📊 決策掃描", "💎 估值候選", "📈 技術圖表 (TSPR + 江恩光陰三雲)", "📐 回撤/江恩",
     "🧪 Walk-forward 回測", "⚖️ 組合風控", "🌟 因子選股", "🛠️ 系統健康"
 ])
 
@@ -1153,19 +1270,19 @@ with tabs[0]:
     st.subheader("🌍 宏觀市場氣氛")
     render_metrics(macro_data, regime)
     st.markdown("""
-**如何使用 Regime 與 TSPR V4.6：** 系統現已整合 **TSPR 10日結構支持位**、**江恩 50% 分水嶺** 與 **OBV / MFI 資金流破位確認**，並自動計算每次跌穿支持後的 **最大下跌幅度 (%)** 與 **頂部至低點總跌幅 (%)**。
+**如何使用 Regime、TSPR 與江恩光陰 V4.7：** 系統已整合 **TSPR 10日結構支持位**、**江恩扇形時間價位（Gann Fan）**、**三雲趨勢（Triple Cloud）**、**VQC 爆量訊號** 與 **蓄勢動能波**，全面監控量價與時間周期共振。
 """)
 
 with tabs[1]:
-    st.subheader("📊 決策掃描｜資格 → 估值 → TSPR 10日支持/江恩50%/OBV確認 → 下跌幅度與風險")
+    st.subheader("📊 決策掃描｜資格 → 估值 → TSPR 10日支持/三雲趨勢/OBV確認 → 下跌幅度與風險")
     if market == "🇭🇰 港股":
         tickers = HK_WATCHLIST
     elif market == "🇺🇸 美股":
         tickers = US_WATCHLIST
     else:
         tickers = [x.strip().upper() for x in custom_input.splitlines() if x.strip()]
-    st.caption(f"本次掃描 {len(tickers)} 個代碼。已整合 TSPR 10日結構支持、江恩 50% 分水嶺、OBV/MFI 確認及週期下跌幅度計算。")
-    if st.button("🚀 執行 V4.6 (含 TSPR 跌幅與江恩確認) 決策掃描", type="primary", key="decision_scan"):
+    st.caption(f"本次掃描 {len(tickers)} 個代碼。已整合 TSPR 10日結構支持、三雲趨勢、江恩 50% 分水嶺、OBV/MFI 確認及週期下跌幅度計算。")
+    if st.button("🚀 執行 V4.7 決策掃描", type="primary", key="decision_scan"):
         clear_errors()
         progress = st.progress(0, text="下載基本面資料…")
         info_map = {}
@@ -1178,7 +1295,7 @@ with tabs[1]:
                 except Exception as exc:
                     add_error("基本面平行工作失敗", ticker, exc)
                 progress.progress(int(i / max(1, len(tickers)) * 35), text=f"基本面 {i}/{len(tickers)}")
-        progress.progress(40, text="下載價格與計算 TSPR 跌幅及決策…")
+        progress.progress(40, text="下載價格與計算 TSPR / 江恩三雲及決策…")
         data_map = fetch_multiple(tickers, period="2y")
         results = []
         with ThreadPoolExecutor(max_workers=MAX_WORKERS_SCORE) as executor:
@@ -1205,7 +1322,7 @@ with tabs[1]:
         candidates = df_results[df_results["decision"].isin(["可小量試倉", "等待突破", "估值觀察"])]
         st.success(f"掃描完成：{len(df_results)} 個有效結果；研究候選 {len(candidates)} 個；可小量試倉 {sum(df_results['decision'] == '可小量試倉')} 個。")
         display_cols = [
-            "ticker", "name", "price", "decision", "tspr_status", "tspr_support", "gann_50",
+            "ticker", "name", "price", "decision", "tspr_status", "cloud_status", "tspr_support", "gann_50",
             "cycle_drop_pct", "peak_to_trough_drop_pct", "post_break_drop_pct",
             "undervaluation", "final_score", "confirm_score", "risk_score",
             "confirmation_price", "stop_loss", "target_2r", "last_bar"
@@ -1218,7 +1335,7 @@ with tabs[1]:
             color = C_GREEN if row["decision"] == "可小量試倉" else C_ORANGE
             st.markdown(
                 f"<div class='decision-card' style='border-left-color:{color}'>"
-                f"<b>{row['ticker']} ({row['name']})｜{row['decision']}｜{row['tspr_status']}｜{row['undervaluation']}</b><br>"
+                f"<b>{row['ticker']} ({row['name']})｜{row['decision']}｜{row['tspr_status']}｜{row['cloud_status']}｜{row['undervaluation']}</b><br>"
                 f"原因：{row['reasons']}<br>"
                 f"📉 <b>下跌幅度統計</b>：現價距週期高點 <b>{row['cycle_drop_pct']}%</b>｜週期頂至底最大跌幅 <b>{row['peak_to_trough_drop_pct']}%</b>｜破位後已跌 <b>{row['post_break_drop_pct']}%</b><br>"
                 f"🎯 <b>關鍵位置</b>：10日支持位：{row['tspr_support']}｜江恩50%：{row['gann_50']}｜確認價：{row['confirmation_price']}｜止損：{row['stop_loss']}｜2R：{row['target_2r']}<br>"
@@ -1226,7 +1343,7 @@ with tabs[1]:
                 unsafe_allow_html=True
             )
     else:
-        st.info("按「執行 V4.6 決策掃描」後會顯示研究候選。")
+        st.info("按「執行 V4.7 決策掃描」後會顯示研究候選。")
 
 with tabs[2]:
     st.subheader("💎 估值候選｜先看便宜，再看是否值得買")
@@ -1238,7 +1355,7 @@ with tabs[2]:
         val_df = val_df[val_df["undervaluation"].isin(["🟢 重度被低估", "🟠 中度被低估", "🟡 輕度被低估"])]
         st.dataframe(
             val_df[[
-                "ticker", "name", "undervaluation", "valuation_score", "tspr_status",
+                "ticker", "name", "undervaluation", "valuation_score", "tspr_status", "cloud_status",
                 "tspr_support", "cycle_drop_pct", "peak_to_trough_drop_pct",
                 "quality_flags", "decision", "confirm_score", "risk_score", "valuation_detail", "blockers"
             ]].sort_values("valuation_score", ascending=False),
@@ -1246,28 +1363,38 @@ with tabs[2]:
         )
 
 with tabs[3]:
-    st.subheader("📈 技術圖表｜TSPR 10日支持位、下跌幅度統計、江恩 50% 與 OBV/MFI 確認")
+    st.subheader("📈 技術圖表｜TSPR 10日支持 + 江恩光陰（Gann Fan 時間價位）+ 三雲趨勢 + 動能波")
 
     col_q1, col_q2, col_q3 = st.columns([2, 2, 3])
     with col_q1:
         quick_pick = st.selectbox(
             "快速切換大市指數 / 個股",
-            ["自訂輸入", "^HSI (恒生指數)", "3033.HK (南方恒生科技)", "^NDX (納斯達克100)", "^GSPC (標普500)", "0700.HK (騰訊)", "NVDA (Nvidia)"],
+            ["自訂輸入", "2800.HK (盈富基金)", "^HSI (恒生指數)", "3033.HK (南方恒生科技)", "^NDX (納斯達克100)", "0700.HK (騰訊)", "NVDA (Nvidia)"],
             index=1
         )
     with col_q2:
-        default_tk = "^HSI" if quick_pick == "^HSI (恒生指數)" else quick_pick.split(" ")[0] if quick_pick != "自訂輸入" else "AAPL"
+        default_tk = quick_pick.split(" ")[0] if quick_pick != "自訂輸入" else "AAPL"
         ticker = st.text_input("股票或指數代碼", default_tk, key="chart_ticker").upper()
     with col_q3:
         period_map = {"3個月": "3mo", "6個月": "6mo", "1年": "1y", "2年": "2y"}
         period = st.radio("時間範圍", list(period_map.keys()), horizontal=True, index=2)
 
+    # 第一排圖層開關：融合 TSPR + 江恩光陰 + 三雲 + VQC
     t_col1, t_col2, t_col3, t_col4, t_col5 = st.columns(5)
-    show_tspr_labels = t_col1.checkbox("顯示 10日支持與破位跌幅標籤", value=True)
-    show_tspr_boxes = t_col2.checkbox("顯示紫色週期形態框", value=True)
-    require_gann_obv = t_col3.checkbox("開啟江恩50%+OBV破位過濾", value=False, help="開啟後，只有同時跌穿江恩50%或OBV/MFI轉弱的真破位才會觸發紅色破位標籤")
-    left_bars_input = t_col4.number_input("支持位左側週期 (日)", min_value=5, max_value=30, value=10)
-    box_period_input = t_col5.number_input("形態箱體週期 (日)", min_value=30, max_value=120, value=65)
+    show_triple_cloud = t_col1.checkbox("顯示三雲趨勢 (Triple Cloud)", value=True)
+    show_gann_fan = t_col2.checkbox("顯示江恩扇形 (光陰時間價位)", value=True)
+    show_vqc = t_col3.checkbox("顯示 VQC 爆量訊號", value=True)
+    show_tspr_labels = t_col4.checkbox("顯示 TSPR 10日支持與跌幅", value=True)
+    show_tspr_boxes = t_col5.checkbox("顯示紫色週期形態框", value=False)
+
+    # 第二排參數微調：江恩扇形方向、手動價格/根斜率、TSPR 週期
+    p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns(5)
+    gann_dir_map = {"自動判斷 (Auto)": "auto", "向下設定 (由頂向下)": "down", "向上設定 (由底向上)": "up"}
+    gann_dir = gann_dir_map[p_col1.selectbox("江恩扇形方向", list(gann_dir_map.keys()), index=0)]
+    manual_gann_scale = p_col2.number_input("江恩斜率 (價格/根, 0=自動)", min_value=0.0, value=0.0, step=0.01, format="%.6f")
+    require_gann_obv = p_col3.checkbox("開啟江恩50%+OBV破位過濾", value=False)
+    left_bars_input = p_col4.number_input("支持位左側週期 (日)", min_value=5, max_value=30, value=10)
+    box_period_input = p_col5.number_input("形態箱體週期 (日)", min_value=30, max_value=120, value=65)
 
     chart_df = fetch_ohlcv(ticker, period=period_map[period])
     if chart_df is not None and len(chart_df) > 30:
@@ -1290,12 +1417,29 @@ with tabs[3]:
         )
         st_data = tspr_res["stats"]
 
-        # 頂部復刻圖二右上角 TSPR 量化統計面板（含完整下跌幅度指標）
+        # 執行江恩光陰（時間價位）+ 三雲 + 動能波計算
+        gc_res = calc_gann_time_and_cloud_system(
+            chart_df,
+            direction=gann_dir,
+            manual_scale=float(manual_gann_scale)
+        )
+
+        # 頂部量化狀態 banner（復刻截圖左上角 GANN FAN 資訊欄）
+        st.info(
+            f"🧭 **GANN FAN {gc_res['gann_direction']} · {gc_res['price_per_bar']:.6f} 價格/根** ｜ "
+            f"錨點：{str(pd.Timestamp(gc_res['anchor_date']).date())} ({gc_res['anchor_price']}) ｜ "
+            f"已運行：**{gc_res['bars_elapsed']} 根 K 線** ｜ "
+            f"1x1 主線現值：**{gc_res['current_gann_1x1']}** ｜ "
+            f"下一江恩時間窗口：**第 {gc_res['next_cycle']} 根（剩餘 {gc_res['days_to_next_cycle']} 日）** ｜ "
+            f"RVOL 相對20日均量：**{gc_res['rvol_now']:.2f}x**"
+        )
+
+        # 頂部 TSPR 量化統計面板
         st.markdown("<div class='tspr-panel'>", unsafe_allow_html=True)
         r1_cols = st.columns(5)
         r1_cols[0].metric("週期最高", f"{st_data.get('cycle_high', 0):,.2f}")
         r1_cols[1].metric("週期最低", f"{st_data.get('cycle_low', 0):,.2f}")
-        r1_cols[2].metric("週期波幅 (點數)", f"{st_data.get('cycle_range', 0):,.2f}")
+        r1_cols[2].metric("三雲趨勢狀態", "🟢 多頭綠雲" if gc_res["cloud_bullish"] else "🔴 空頭紅雲")
         r1_cols[3].metric("頂部至低點跌幅", f"{st_data.get('peak_to_trough_drop_pct', 0):.2f}%", delta=f"現價距頂 {st_data.get('current_drop_from_high_pct', 0):.2f}%", delta_color="inverse")
         r1_cols[4].metric("調整比率 (波幅佔比)", f"{st_data.get('retracement_pct', 0):.1f}%")
 
@@ -1303,24 +1447,108 @@ with tabs[3]:
         r2_cols[0].metric("10日關鍵支持位", f"{st_data.get('active_support', np.nan):,.2f}" if not np.isnan(st_data.get("active_support", np.nan)) else "N/A")
         r2_cols[1].metric("週期江恩 50% 分水嶺", f"{st_data.get('cycle_gann_50', 0):,.2f}", delta="已失守" if st_data.get("below_gann_50") else "守穩中", delta_color="inverse" if st_data.get("below_gann_50") else "normal")
         r2_cols[2].metric("歷次破位平均再跌幅度", f"{st_data.get('avg_post_break_drop_pct', 0):.2f}%", delta=f"當前破位已跌 {st_data.get('active_post_break_drop_pct', 0):.2f}%")
-        r2_cols[3].metric("黃金比率 1.236倍 (上/下)", f"{st_data.get('fib_1236', 0):,.0f} / {st_data.get('fib_1236_down', 0):,.0f}")
+        r2_cols[3].metric("江恩 1x1 時間價位主線", f"{gc_res['current_gann_1x1']:,.2f}")
         r2_cols[4].metric("TSPR 趨勢狀態", st_data.get("status", "N/A"))
         st.markdown("</div>", unsafe_allow_html=True)
 
         fig = make_subplots(
-            rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.02,
-            row_heights=[0.50, 0.12, 0.12, 0.13, 0.13],
-            subplot_titles=("K線 + TSPR 10日支持與破位跌幅 + 紫色週期框", "成交量", "OBV 能量潮 vs MA10", "日 RSI / 真周 RSI / MFI(14)", "MACD")
+            rows=6, cols=1, shared_xaxes=True, vertical_spacing=0.018,
+            row_heights=[0.46, 0.11, 0.11, 0.10, 0.11, 0.11],
+            subplot_titles=(
+                "K線 + 三雲趨勢 + 江恩光陰扇形 (Gann Fan) + TSPR 10日支持",
+                "成交量 & RVOL 爆量高亮",
+                "動能波 — 蓄勢與動能波 (黃點=蓄勢 / 青點=爆發)",
+                "OBV 能量潮 vs MA10",
+                "日 RSI / 真周 RSI / MFI(14)",
+                "MACD"
+            )
         )
+
+        # ==================== 第 1 行：主圖（三雲趨勢 + 江恩扇形 + K線 + TSPR） ====================
+        if show_triple_cloud:
+            # 繪製三層雲帶（分別按多頭翠綠 / 空頭玫紅著色）
+            cloud_pairs = [
+                (gc_res["ema_slow_1"], gc_res["ema_slow_2"], "長雲(55/89)", 0.18),
+                (gc_res["ema_mid_1"], gc_res["ema_mid_2"], "中雲(21/34)", 0.24),
+                (gc_res["ema_fast_1"], gc_res["ema_fast_2"], "短雲(5/13)", 0.30),
+            ]
+            for e1, e2, c_name, alpha in cloud_pairs:
+                bull_upper = np.where(e1 >= e2, e1, np.nan)
+                bull_lower = np.where(e1 >= e2, e2, np.nan)
+                bear_upper = np.where(e1 < e2, e2, np.nan)
+                bear_lower = np.where(e1 < e2, e1, np.nan)
+
+                fig.add_trace(go.Scatter(x=chart_df.index, y=bull_lower, line=dict(width=0), showlegend=False, hoverinfo="skip"), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=chart_df.index, y=bull_upper, fill="tonexty",
+                    fillcolor=f"rgba(38, 166, 154, {alpha})", line=dict(width=0),
+                    name=f"{c_name}多頭", showlegend=False, hoverinfo="skip"
+                ), row=1, col=1)
+
+                fig.add_trace(go.Scatter(x=chart_df.index, y=bear_lower, line=dict(width=0), showlegend=False, hoverinfo="skip"), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=chart_df.index, y=bear_upper, fill="tonexty",
+                    fillcolor=f"rgba(233, 30, 99, {alpha})", line=dict(width=0),
+                    name=f"{c_name}空頭", showlegend=False, hoverinfo="skip"
+                ), row=1, col=1)
+
+        # K線本體
         fig.add_trace(go.Candlestick(
             x=chart_df.index, open=chart_df["open"], high=chart_df["high"],
             low=chart_df["low"], close=close,
             increasing_line_color="#26a69a", decreasing_line_color="#ef5350", name="K線"
         ), row=1, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=close.rolling(20).mean(), name="MA20", line=dict(color="#f0883e", width=1.2)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=close.rolling(50).mean(), name="MA50", line=dict(color=C_BLUE, width=1.2)), row=1, col=1)
+
         if not avwap.empty:
-            fig.add_trace(go.Scatter(x=avwap.index, y=avwap, name="Anchored VWAP（近60日低點）", line=dict(color=C_PURPLE, dash="dot")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=avwap.index, y=avwap, name="Anchored VWAP（近60日低點）", line=dict(color=C_PURPLE, dash="dot", width=1.2)), row=1, col=1)
+
+        # 江恩光陰扇形線 (Gann Fan) + 1x1 主通道帶
+        if show_gann_fan:
+            p_min, p_max = float(chart_df["low"].min()) * 0.85, float(chart_df["high"].max()) * 1.15
+            for fl in gc_res["fan_lines"]:
+                y_clipped = np.where((fl["values"] >= p_min) & (fl["values"] <= p_max), fl["values"], np.nan)
+                is_main = "1x1" in fl["label"]
+                fig.add_trace(go.Scatter(
+                    x=fl["dates"], y=y_clipped,
+                    name=f"Gann {fl['label']}",
+                    line=dict(
+                        color="#80deea" if is_main else "rgba(139, 148, 158, 0.45)",
+                        width=2.0 if is_main else 1.0,
+                        dash="solid" if is_main else "dot"
+                    ),
+                    showlegend=is_main
+                ), row=1, col=1)
+
+            # 標註江恩起點圓圈
+            fig.add_trace(go.Scatter(
+                x=[gc_res["anchor_date"]], y=[gc_res["anchor_price"]],
+                mode="markers", name="江恩光陰起點",
+                marker=dict(symbol="circle-open", size=14, color="#ffd54f", line=dict(width=2.5))
+            ), row=1, col=1)
+
+            # 繪製江恩時間周期垂直虛線（15/30/45/60/90/120日）
+            for tm in gc_res["time_markers"]:
+                fig.add_vline(
+                    x=tm["date"], line_width=1, line_dash="dot",
+                    line_color="rgba(128, 222, 234, 0.35)", row=1, col=1
+                )
+                fig.add_annotation(
+                    x=tm["date"], y=float(chart_df["high"].max()),
+                    text=f"T+{tm['days']}", showarrow=False, yanchor="bottom",
+                    font=dict(color="#80deea", size=9), row=1, col=1
+                )
+
+        # VQC 爆量訊號標籤
+        if show_vqc and gc_res["vqc_dates"]:
+            fig.add_trace(go.Scatter(
+                x=gc_res["vqc_dates"],
+                y=[p * 1.008 for p in gc_res["vqc_prices"]],
+                mode="text",
+                text=["VQC"] * len(gc_res["vqc_dates"]),
+                textposition="top center",
+                textfont=dict(color="#ce93d8", size=10, family="Arial Black"),
+                name="VQC 量價異動"
+            ), row=1, col=1)
 
         # 繪製當前週期江恩 50% 水平參考線
         fig.add_hline(
@@ -1329,7 +1557,7 @@ with tabs[3]:
             annotation_position="bottom right", row=1, col=1
         )
 
-        # 繪製 TSPR 紫色形態箱體 (連同箱體頂底跌幅標註)
+        # 繪製 TSPR 紫色形態箱體
         if show_tspr_boxes:
             for idx_b, box in enumerate(tspr_res["pattern_boxes"]):
                 fig.add_shape(
@@ -1349,7 +1577,7 @@ with tabs[3]:
                     row=1, col=1
                 )
 
-        # 繪製 TSPR 10日支持水平虛線、綠色支持標籤與紅色跌穿標籤（直接顯示破位跌幅 %）
+        # 繪製 TSPR 10日支持水平虛線與破位跌幅標籤
         if show_tspr_labels:
             for s_line in tspr_res["support_lines"]:
                 line_col = "#ef5350" if s_line["broken"] else "#3fb950"
@@ -1386,26 +1614,57 @@ with tabs[3]:
                     row=1, col=1
                 )
 
-        # 第 2 行：成交量
-        fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["volume"], name="成交量", marker_color=[C_GREEN if c >= o else C_RED for c, o in zip(chart_df["close"], chart_df["open"])]), row=2, col=1)
-        # 第 3 行：OBV 與 OBV 10日均線
-        fig.add_trace(go.Scatter(x=chart_df.index, y=obv_s, name="OBV", line=dict(color=C_BLUE, width=1.3)), row=3, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=obv_ma10_s, name="OBV MA10", line=dict(color=C_ORANGE, dash="dot", width=1.2)), row=3, col=1)
-        # 第 4 行：RSI / 周RSI / MFI
-        fig.add_trace(go.Scatter(x=chart_df.index, y=rsi, name="日 RSI(14)", line=dict(color=C_ORANGE)), row=4, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=weekly_rsi, name="真周 RSI(14)", line=dict(color=C_PURPLE, dash="dot")), row=4, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=mfi_s, name="MFI(14)", line=dict(color="#26a69a", width=1)), row=4, col=1)
-        fig.add_hline(y=50, line_dash="dot", line_color=C_GREY, row=4, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color=C_GREY, row=4, col=1)
-        # 第 5 行：MACD
-        fig.add_trace(go.Bar(x=chart_df.index, y=hist, name="MACD Histogram", marker_color=[C_GREEN if x >= 0 else C_RED for x in hist.fillna(0)]), row=5, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=macd, name="MACD", line=dict(color=C_BLUE)), row=5, col=1)
-        fig.add_trace(go.Scatter(x=chart_df.index, y=signal, name="Signal", line=dict(color=C_ORANGE)), row=5, col=1)
+        # ==================== 第 2 行：成交量（VQC 爆量柱高亮洋紅色） ====================
+        vol_colors = []
+        vqc_set = set(gc_res["vqc_dates"])
+        for dt, c, o in zip(chart_df.index, chart_df["close"], chart_df["open"]):
+            if dt in vqc_set:
+                vol_colors.append("#e040fb")
+            elif c >= o:
+                vol_colors.append(C_GREEN)
+            else:
+                vol_colors.append(C_RED)
+        fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["volume"], name="成交量(紫=VQC爆量)", marker_color=vol_colors), row=2, col=1)
 
-        fig.update_layout(height=1050, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
+        # ==================== 第 3 行：動能波（蓄勢與動能波：黃點=蓄勢 / 青點=爆發） ====================
+        mom_vals = gc_res["mom_wave"].fillna(0)
+        mom_colors = []
+        for idx_m in range(len(mom_vals)):
+            val = mom_vals.iloc[idx_m]
+            prev_val = mom_vals.iloc[idx_m - 1] if idx_m > 0 else val
+            if val >= 0:
+                mom_colors.append("#26a69a" if val >= prev_val else "#00695c")
+            else:
+                mom_colors.append("#ef5350" if val <= prev_val else "#b71c1c")
+
+        fig.add_trace(go.Bar(x=chart_df.index, y=mom_vals, name="動能波", marker_color=mom_colors), row=3, col=1)
+        dot_colors = ["#ffd54f" if sq else "#00e5ff" for sq in gc_res["squeeze_on"].fillna(False)]
+        fig.add_trace(go.Scatter(
+            x=chart_df.index, y=np.zeros(len(chart_df)),
+            mode="markers", name="蓄勢點(黃=蓄勢/青=爆發)",
+            marker=dict(color=dot_colors, size=5)
+        ), row=3, col=1)
+
+        # ==================== 第 4 行：OBV 與 OBV 10日均線 ====================
+        fig.add_trace(go.Scatter(x=chart_df.index, y=obv_s, name="OBV", line=dict(color=C_BLUE, width=1.3)), row=4, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=obv_ma10_s, name="OBV MA10", line=dict(color=C_ORANGE, dash="dot", width=1.2)), row=4, col=1)
+
+        # ==================== 第 5 行：RSI / 周RSI / MFI ====================
+        fig.add_trace(go.Scatter(x=chart_df.index, y=rsi, name="日 RSI(14)", line=dict(color=C_ORANGE)), row=5, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=weekly_rsi, name="真周 RSI(14)", line=dict(color=C_PURPLE, dash="dot")), row=5, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=mfi_s, name="MFI(14)", line=dict(color="#26a69a", width=1)), row=5, col=1)
+        fig.add_hline(y=50, line_dash="dot", line_color=C_GREY, row=5, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color=C_GREY, row=5, col=1)
+
+        # ==================== 第 6 行：MACD ====================
+        fig.add_trace(go.Bar(x=chart_df.index, y=hist, name="MACD Histogram", marker_color=[C_GREEN if x >= 0 else C_RED for x in hist.fillna(0)]), row=6, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=macd, name="MACD", line=dict(color=C_BLUE)), row=6, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=signal, name="Signal", line=dict(color=C_ORANGE)), row=6, col=1)
+
+        fig.update_layout(height=1220, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True, key=f"technical_chart_{ticker}_{period}")
 
-        # 新增：歷次跌穿 10 日支持位之下跌幅度明細表
+        # 歷次跌穿 10 日支持位之下跌幅度明細表
         st.markdown("### 📉 歷次跌穿 10 日支持位之下跌幅度與確認統計表")
         if tspr_res["breakdown_events"]:
             brk_rows = []
@@ -1429,7 +1688,7 @@ with tabs[3]:
             st.info("所選時間範圍內未出現跌穿 10 日支持位事件。")
 
 with tabs[4]:
-    st.subheader("📐 回撤、斐波那契與江恩觀察位")
+    st.subheader("📐 回撤、斐波那契與江恩時間價位觀察位")
     ticker = st.text_input("股票代碼", "NVDA", key="levels_ticker").upper()
     if st.button("計算觀察位", key="calc_levels"):
         df = fetch_ohlcv(ticker, period="2y")
@@ -1440,6 +1699,7 @@ with tabs[4]:
             high = get_52w_high(df)
             low = safe_float(df["low"].iloc[-252:].min())
             tspr_info = calc_tspr_system(df)
+            gc_info = calc_gann_time_and_cloud_system(df)
             st_i = tspr_info["stats"]
             cols = st.columns(3)
             cols[0].dataframe(pd.DataFrame([{"高點回撤比例": k, "目標價位": v} for k, v in drop_levels(high).items()]), hide_index=True)
@@ -1447,7 +1707,7 @@ with tabs[4]:
             cols[2].dataframe(pd.DataFrame([{"江恩回調比例": k, "目標價位": v} for k, v in gann_levels(low, high).items()]), hide_index=True)
             st.caption(
                 f"現價：{current:.3f}｜TSPR 10日支持位：{tspr_info['active_support']}｜週期江恩50%：{st_i.get('cycle_gann_50')}｜"
-                f"週期頂至底跌幅：{st_i.get('peak_to_trough_drop_pct')}%｜狀態：{tspr_info['status']}"
+                f"江恩1x1光陰主線：{gc_info['current_gann_1x1']}（斜率 {gc_info['price_per_bar']} 價格/根）｜狀態：{tspr_info['status']}"
             )
 
 with tabs[5]:
