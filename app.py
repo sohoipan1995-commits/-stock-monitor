@@ -23,7 +23,7 @@ try:
 except ImportError:
     FUTU_AVAILABLE = False
 
-st.set_page_config(page_title="📈 終極撈底系統 V6.5 (頂級資金流 + 回調階梯)", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="📈 終極撈底系統 V6.6 (置頂名單 + 全景階梯)", page_icon="🎯", layout="wide")
 
 C_RED = "#f85149"
 C_GREEN = "#3fb950"
@@ -39,23 +39,23 @@ INFO_TTL = 3600
 MAX_WORKERS_DATA = 5
 FUTU_LOCK = threading.RLock()
 
-# 💡 依照要求，永久置頂你的專屬核心名單
-HK_WATCHLIST = [
-    "9988.HK", "0700.HK", "0124.HK", "3690.HK", "1810.HK", "0388.HK", # 你的置頂名單
-    "0005.HK", "0939.HK", "1398.HK", "3988.HK", "0066.HK", "0003.HK", 
-    "0002.HK", "0016.HK", "0883.HK", "2318.HK", "1299.HK", "0001.HK", 
-    "0175.HK", "0027.HK", "2628.HK", "0011.HK", "0688.HK", "9618.HK", 
-    "0981.HK", "9999.HK", "2382.HK", "0291.HK", "1211.HK", "0267.HK", 
-    "2688.HK", "0762.HK", "3033.HK", "2800.HK"
-]
+# 💡 你的專屬永久置頂名單
+HK_PINNED = ["9988.HK", "0700.HK", "0124.HK", "3690.HK", "1810.HK", "0388.HK"]
+US_PINNED = ["NFLX", "NVDA", "GOOGL", "MSFT", "META", "MU", "TSM", "SPCX", "AVGO", 
+             "TSLA", "AAPL", "AMD", "AMZN", "ORCL", "PLTR", "UNH", "PDD"]
 
-US_WATCHLIST = [
-    "NFLX", "NVDA", "MU", "GOOGL", "MSFT", "META", "TSM", "SPCX", "AVGO", 
-    "TSLA", "AAPL", "AMD", "AMZN", "ORCL", "PLTR", "UNH", "PDD", # 你的置頂名單
-    "ASML", "QCOM", "INTC", "AMAT", "LRCX", "JPM", "BAC", "GS", "MS", 
-    "BRK-B", "COST", "WMT", "HD", "JNJ", "PFE", "XOM", "NEE", "UBER", 
-    "LITE", "CLX", "CRM", "MSTR", "LLY", "PYPL"
-]
+# 將置頂名單與其他觀察清單合併 (利用 set 去重複，並確保置頂名單在前)
+HK_OTHERS = ["0005.HK", "0939.HK", "1398.HK", "3988.HK", "0066.HK", "0003.HK", 
+             "0002.HK", "0016.HK", "0883.HK", "2318.HK", "1299.HK", "0001.HK", 
+             "0175.HK", "0027.HK", "2628.HK", "0011.HK", "0688.HK", "9618.HK", 
+             "0981.HK", "9999.HK", "2382.HK", "0291.HK", "1211.HK", "0267.HK", 
+             "2688.HK", "0762.HK", "3033.HK", "2800.HK"]
+HK_WATCHLIST = HK_PINNED + [x for x in HK_OTHERS if x not in HK_PINNED]
+
+US_OTHERS = ["ASML", "QCOM", "INTC", "AMAT", "LRCX", "JPM", "BAC", "GS", "MS", 
+             "BRK-B", "COST", "WMT", "HD", "JNJ", "PFE", "XOM", "NEE", "UBER", 
+             "LITE", "CLX", "CRM", "MSTR", "LLY", "PYPL"]
+US_WATCHLIST = US_PINNED + [x for x in US_OTHERS if x not in US_PINNED]
 
 MACRO_TICKERS = {
     "VIX": "^VIX", "VVIX": "^VVIX", "SPX": "^GSPC", "HSI": "^HSI",
@@ -92,6 +92,9 @@ def add_error(context, ticker=None, exc=None):
     if exc: message += f"｜{type(exc).__name__}: {str(exc)[:180]}"
     st.session_state.error_log.append({"時間": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "訊息": message})
     st.session_state.error_log = st.session_state.error_log[-50:]
+
+def clear_errors():
+    st.session_state.error_log = []
 
 def to_futu(ticker):
     if ticker.endswith(".HK"): return f"HK.{ticker[:-3].zfill(5)}"
@@ -192,7 +195,6 @@ def calc_mfi(df, period=14):
     neg = money.where(typical < typical.shift(1), 0).rolling(period).sum()
     return 100 - 100 / (1 + pos / neg.replace(0, np.nan))
 
-# 💡 新增：蔡金資金流量指標 (CMF) 深度測量大戶吃貨/出貨力度
 def calc_cmf(df, period=20):
     high = df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"]
     low = df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"]
@@ -210,10 +212,9 @@ def get_52w_high(df):
     window = highs[-252:] if len(highs) >= 252 else highs
     return float(np.nanmax(window)) if len(window) > 0 and not np.all(np.isnan(window)) else np.nan
 
-# 💡 新增：生成清晰的 10%-90% 回調階梯顯示板塊 (非表格)
+# 💡 全景回調階梯生成器 (視覺化 HTML 卡片用)
 def generate_drawdown_ladder_html(high52, current_price):
     if np.isnan(high52) or high52 <= 0: return ""
-    
     drawdown_pct = (current_price / high52 - 1) * 100
     next_milestone_pct = math.floor(drawdown_pct / 10) * 10
     if next_milestone_pct > -10: next_milestone_pct = -10
@@ -224,18 +225,30 @@ def generate_drawdown_ladder_html(high52, current_price):
     
     for pct in range(10, 100, 10):
         price_at_pct = high52 * (1 - pct/100)
-        # 用顯眼的紅色標示出你「下一個」會遇到的 10% 關口
         if -pct == next_milestone_pct:
             ladder_html += f"<span style='color:#f85149; font-weight:bold; font-size:15px; margin-right:16px; border-bottom: 2px solid #f85149;'>▼{pct}%: {price_at_pct:.2f}</span> "
         else:
             ladder_html += f"<span style='color:#8b949e; margin-right:16px;'>▼{pct}%: {price_at_pct:.2f}</span> "
-            
-        # 適度換行讓排版不擁擠
         if pct == 40 or pct == 80:
             ladder_html += "<br>"
-            
     ladder_html += "</div>"
     return ladder_html
+
+# 💡 全景回調階梯生成器 (Dataframe 壓縮字串用)
+def generate_drawdown_ladder_text(high52, current_price):
+    if np.isnan(high52) or high52 <= 0: return ""
+    drawdown_pct = (current_price / high52 - 1) * 100
+    next_milestone_pct = math.floor(drawdown_pct / 10) * 10
+    if next_milestone_pct > -10: next_milestone_pct = -10
+    
+    parts = []
+    for pct in range(10, 100, 10):
+        price_at_pct = high52 * (1 - pct/100)
+        if -pct == next_milestone_pct:
+            parts.append(f"🎯▼{pct}%({price_at_pct:.1f})")
+        else:
+            parts.append(f"▼{pct}%({price_at_pct:.1f})")
+    return " | ".join(parts)
 
 # ==================== 江恩與 TSPR ====================
 def calc_tspr_system(df, left_bars=10):
@@ -311,7 +324,7 @@ def predict_gann_turn_dates(df, forward_trading_days=45):
     hit_df = pd.DataFrame(records).sort_values(["共振強度分", "預測轉勢日期"], ascending=[False, True]) if records else pd.DataFrame()
     return {"top_turns": hit_df.to_dict("records") if not hit_df.empty else []}
 
-# ==================== 決策引擎 (包含強化資金流分析) ====================
+# ==================== 決策引擎 (包含資金流強化) ====================
 @st.cache_data(ttl=OHLCV_TTL)
 def fetch_macro():
     result = {}
@@ -359,7 +372,7 @@ def decision_engine(ticker, df, info):
     macd, macd_signal, _ = calc_macd(close)
     obv_s, obv_ma = calc_obv(df)
     mfi = safe_float(calc_mfi(df).iloc[-1], 50)
-    cmf = safe_float(calc_cmf(df).iloc[-1], 0) # 💡 新增 CMF
+    cmf = safe_float(calc_cmf(df).iloc[-1], 0)
     
     obv_status = "流入" if safe_float(obv_s.iloc[-1]) > safe_float(obv_ma.iloc[-1]) else "流出"
     drawdown = (price / high52 - 1) * 100 if high52 > 0 and not np.isnan(high52) else 0
@@ -371,11 +384,9 @@ def decision_engine(ticker, df, info):
 
     # 1. 估值評估
     pe = safe_float(info.get("pe"))
-    pb = safe_float(info.get("pb"))
-    roe = safe_float(info.get("roe"))
     pe_str = f"{pe:.1f}" if pe > 0 else "N/A"
     
-    # 2. 超賣程度 (Oversold Score 0-100)
+    # 2. 超賣程度
     os_score = 0
     os_desc = []
     if rsi < 35: os_score += 40; os_desc.append(f"RSI({rsi:.1f})嚴重超賣")
@@ -387,37 +398,28 @@ def decision_engine(ticker, df, info):
     os_score = min(100, os_score)
     os_str = " ｜ ".join(os_desc) if os_desc else "未見明顯超賣"
     
-    # 3. 💡 強化資金流分析 (Flow Score 0-100)
+    # 3. 資金流強化分析
     flow_score = 0
     flow_tags = []
-    # OBV 判斷大戶
-    if obv_status == "流入": 
-        flow_score += 35; flow_tags.append("OBV大戶增籌")
-    else: 
-        flow_tags.append("OBV量能減弱")
+    if obv_status == "流入": flow_score += 35; flow_tags.append("OBV大戶增籌")
+    else: flow_tags.append("OBV量能減弱")
         
-    # MFI 判斷買賣氣氛
-    if mfi > 60: 
-        flow_score += 35; flow_tags.append(f"MFI({mfi:.0f})熱度高")
-    elif mfi < 40: 
-        flow_tags.append(f"MFI({mfi:.0f})資金枯竭")
+    if mfi > 60: flow_score += 35; flow_tags.append(f"MFI({mfi:.0f})熱度高")
+    elif mfi < 40: flow_tags.append(f"MFI({mfi:.0f})資金枯竭")
         
-    # CMF 判斷絕對資金淨流向
-    if cmf > 0.1:
-        flow_score += 30; flow_tags.append(f"CMF({cmf:.2f})強勢流入")
-    elif cmf < -0.1:
-        flow_tags.append(f"CMF({cmf:.2f})顯著流出")
+    if cmf > 0.1: flow_score += 30; flow_tags.append(f"CMF({cmf:.2f})強勢流入")
+    elif cmf < -0.1: flow_tags.append(f"CMF({cmf:.2f})顯著流出")
         
     flow_str = " ｜ ".join(flow_tags)
     
-    # 4. 總技術評分 (Tech Score 0-100)
+    # 4. 總技術評分
     struct_score = 100 if not tspr["is_broken"] and not pd.isna(tspr["active_support"]) else 0
     tech_score = (os_score * 0.4) + (flow_score * 0.3) + (struct_score * 0.3)
     
-    # 止損與生成回調階梯
     tspr_sup = tspr["active_support"]
     stop_loss_val = min(price * 0.95, tspr_sup if not pd.isna(tspr_sup) else price * 0.95)
     ladder_html = generate_drawdown_ladder_html(high52, price)
+    ladder_text = generate_drawdown_ladder_text(high52, price)
 
     return {
         "ticker": ticker, "name": info.get("name", ticker), "price": round(price, 3), "high52": round(high52, 3),
@@ -425,7 +427,7 @@ def decision_engine(ticker, df, info):
         "oversold_detail": os_str, "flow_detail": flow_str,
         "tspr_status": tspr["status"], "tspr_support": tspr_sup,
         "next_turn_date": next_turn_str, "drawdown": round(drawdown, 2),
-        "stop_loss": round(stop_loss_val, 3), "roe": roe, "ladder_html": ladder_html
+        "stop_loss": round(stop_loss_val, 3), "ladder_html": ladder_html, "ladder_text": ladder_text
     }
 
 # ==================== Streamlit UI ====================
@@ -445,12 +447,12 @@ macro_data = fetch_macro()
 regime = classify_market_state(market, macro_data)
 benchmark_df = fetch_ohlcv(regime["benchmark"], period="1y")
 
-st.markdown("# 🎯 終極撈底系統 V6.5")
-st.caption(f"全景技術監控與資金流剖析｜專屬核心名單置頂｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
+st.markdown("# 🎯 終極撈底系統 V6.6")
+st.caption(f"專屬置頂名單 + 全景回調階梯雙模式顯示｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
 
 tabs = st.tabs([
     "🌍 大市深度剖析 (Macro & Gann)", 
-    "📊 全市場技術排行 (Tech Ranking)", 
+    "📊 關注名單：技術評分總排行", 
     "🎯 撈底黃金雷達 (Screener)", 
     "📈 深度技術圖表 (Charts)"
 ])
@@ -459,18 +461,14 @@ tabs = st.tabs([
 with tabs[0]:
     st.subheader(f"大市氣氛溫度計：{regime['name']}")
     st.info(f"💡 **資金對策：** {regime['strategy']}")
-    
     cols = st.columns(4)
     for col, (key, label) in zip(cols, [("VIX", "😱 美股 VIX"), ("VHSI", "🇭🇰 港股 VHSI"), ("SPX", "🇺🇸 S&P 500"), ("HSI", "🇭🇰 恒生指數")]):
         item = macro_data.get(key, {})
         col.metric(label, f"{safe_float(item.get('val'), 0):.2f}", f"{safe_float(item.get('chg'), 0):+.2f}%")
         
     st.markdown("### 📅 大市(基準)下個江恩轉勢日 深度理據剖析")
-    st.caption("高勝率的轉勢日往往是多個時間週期（歷史頂底間距、斐波那契時間、自然節氣）的完美重疊。")
-    
     turn_res = predict_gann_turn_dates(benchmark_df, forward_trading_days=45)
     top_turns = turn_res.get("top_turns", [])
-    
     if top_turns:
         best_turn = top_turns[0]
         st.markdown(
@@ -479,21 +477,16 @@ with tabs[0]:
             f"<b>共振強度分：</b> {best_turn['共振強度分']} 分<br><br>"
             f"<b>📊 深度推演理據 (為何這天容易轉勢？)：</b><br>"
             f"<ul>" + "".join([f"<li>{r}</li>" for r in best_turn['時間周期依據'].split(' ｜ ')]) + "</ul>"
-            f"<i>操作提示：若大市在此日期前持續下跌，當日極容易見底反彈（撈底良機）；若持續上升，則提防見頂回調。</i>"
             f"</div>", unsafe_allow_html=True
         )
-        
-        st.markdown("#### ⏳ 其他潛在轉勢時間窗")
-        other_turns = pd.DataFrame(top_turns[1:])
-        if not other_turns.empty:
-            st.dataframe(other_turns[["預測轉勢日期", "星期", "共振強度分", "時間周期依據"]], use_container_width=True, hide_index=True)
 
-# ==================== Tab 2: 全市場技術排行 ====================
+# ==================== Tab 2: 關注名單：技術評分總排行 ====================
 with tabs[1]:
-    st.subheader("📊 關注名單：技術評分總排行")
-    st.caption("將所有股票按『超賣度 + 資金流向 + 結構』的綜合技術評分 (0-100) 由高至低排列。一眼看清 PE、超賣細節與資金動向。")
+    st.subheader("📊 關注名單：技術評分總排行 (專屬名單永久置頂)")
+    st.caption("結合超賣程度與資金流向（OBV/MFI/CMF）進行綜合評分。專屬名單已固定在最上方，並附帶全景回調階梯。")
     
     tickers = US_WATCHLIST if market == "🇺🇸 核心與美股" else HK_WATCHLIST
+    active_pinned = US_PINNED if market == "🇺🇸 核心與美股" else HK_PINNED
     
     if st.button("🚀 載入並排行所有股票", type="primary", key="rank_btn"):
         progress = st.progress(0, text="下載全市場資料中...")
@@ -511,49 +504,65 @@ with tabs[1]:
         progress.empty()
         
         if results:
-            df_results = pd.DataFrame(results).sort_values("tech_score", ascending=False)
+            df_results = pd.DataFrame(results)
+            # 💡 判斷是否為永久置頂名單
+            df_results["置頂"] = df_results["ticker"].apply(lambda x: "📌" if x in active_pinned else "")
             
-            # 儲存到 session state 以供 Tab 3 雷達使用
+            # 💡 排序邏輯：優先按【置頂】排，其次按【技術評分】降序
+            df_results = df_results.sort_values(["置頂", "tech_score"], ascending=[False, False])
             st.session_state["latest_results"] = df_results
             
+            # Dataframe 概覽 (包含文字版回調階梯)
             display_df = df_results[[
-                "ticker", "name", "tech_score", "pe", 
+                "置頂", "ticker", "name", "tech_score", "pe", 
                 "oversold_detail", "flow_detail", 
-                "tspr_status", "next_turn_date", "drawdown", "stop_loss"
+                "tspr_status", "next_turn_date", "drawdown", "stop_loss", "ladder_text"
             ]].rename(columns={
                 "ticker": "代碼", "name": "名稱", "tech_score": "技術評分", 
                 "pe": "現時PE", "oversold_detail": "超賣細節", "flow_detail": "資金流細節(OBV/MFI/CMF)",
                 "tspr_status": "TSPR 狀態", "next_turn_date": "下個轉勢日", 
-                "drawdown": "高位回調%", "stop_loss": "止損位"
+                "drawdown": "高位回調%", "stop_loss": "止損位", "ladder_text": "全景回調階梯 (▼10% 至 ▼90%)"
             })
             
-            st.success("排名完成！分數越高，代表技術上越超賣且資金有強勢回流跡象，是潛在的右側接貨點。")
+            st.success("排名完成！你的專屬名單已永久置頂，其餘按技術評分排序。")
             st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+            # 💡 為置頂專屬名單生成視覺化「全景回調階梯卡片」
+            st.markdown("### 📌 永久置頂專屬名單 (深度回調階梯與分析)")
+            pinned_results = df_results[df_results["置頂"] == "📌"]
+            
+            for _, row in pinned_results.iterrows():
+                st.markdown(
+                    f"<div class='decision-card'>"
+                    f"⭐ <b style='font-size:18px; color:#58a6ff;'>{row['ticker']} {row['name']}</b> ｜ 技術評分: <b style='color:#f85149;'>{row['tech_score']}</b> ｜ 現時PE: <b>{row['pe']}</b><br>"
+                    f"<b>資金動向：</b> <span style='color:#3fb950; font-weight:bold;'>{row['flow_detail']}</span><br>"
+                    f"<b>行動建議：</b> 配合轉勢日 <b>{row['next_turn_date']}</b>，企穩 <b>{row['tspr_status']}</b>（{row['tspr_support']}）可建首注。止損：<b>{row['stop_loss']}</b><br>"
+                    f"{row['ladder_html']}"
+                    f"</div>", unsafe_allow_html=True
+                )
 
-# ==================== Tab 3: 撈底黃金雷達 (含全景回調階梯) ====================
+# ==================== Tab 3: 撈底黃金雷達 ====================
 with tabs[2]:
-    st.subheader("🎯 撈底黃金雷達 (含全景回調接貨階梯)")
-    st.caption("嚴格過濾出：技術評分 >= 40 且 有明顯超賣特徵的股票，並顯示其下方所有的 10% 區間對應價位。")
+    st.subheader("🎯 撈底黃金雷達")
+    st.caption("自動過濾出全市場：技術評分 >= 40 且 有明顯資金流入的股票，適合進行右側交易。")
     
     if "latest_results" not in st.session_state:
-        st.info("請先在『Tab 2: 全市場技術排行』點擊載入，雷達掃描名單會自動為你過濾生成。")
+        st.info("請先在『Tab 2: 關注名單』點擊載入，雷達掃描名單會自動為你過濾生成。")
     else:
         df_results = st.session_state["latest_results"]
-        # 過濾邏輯：需要一定的超賣或資金流入評分
         bottom_fish_df = df_results[df_results["tech_score"] >= 40].copy()
         
         if bottom_fish_df.empty:
             st.warning("目前沒有符合【高超賣 + 資金流入】標準的股票。切勿夾硬買入。")
         else:
-            st.success(f"雷達鎖定 {len(bottom_fish_df)} 隻潛在撈底目標！")
-            
+            st.success(f"雷達鎖定 {len(bottom_fish_df)} 隻高潛力撈底目標！")
             for _, row in bottom_fish_df.iterrows():
                 st.markdown(
                     f"<div class='good-card'>"
                     f"⭐ <b style='font-size:18px; color:#58a6ff;'>{row['ticker']} {row['name']}</b> ｜ 技術評分: <b style='color:#f85149;'>{row['tech_score']}</b> ｜ 現時PE: <b>{row['pe']}</b><br>"
                     f"<b>超賣細節：</b> {row['oversold_detail']}<br>"
                     f"<b>資金動向：</b> <span style='color:#3fb950; font-weight:bold;'>{row['flow_detail']}</span><br>"
-                    f"<b>行動建議：</b> 配合江恩轉勢日 <b>{row['next_turn_date']}</b>，企穩 <b>{row['tspr_status']}</b>（{row['tspr_support']}）可建首注。破位止損：<b>{row['stop_loss']}</b><br>"
+                    f"<b>行動建議：</b> 配合江恩轉勢日 <b>{row['next_turn_date']}</b>，企穩 <b>{row['tspr_status']}</b>（{row['tspr_support']}）可建首注。<br>"
                     f"{row['ladder_html']}"
                     f"</div>", unsafe_allow_html=True
                 )
