@@ -23,7 +23,7 @@ try:
 except ImportError:
     FUTU_AVAILABLE = False
 
-st.set_page_config(page_title="📈 終極撈底系統 V6.0 (深度轉勢分析 + 技術總排行)", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="📈 終極撈底系統 V6.5 (頂級資金流 + 回調階梯)", page_icon="🎯", layout="wide")
 
 C_RED = "#f85149"
 C_GREEN = "#3fb950"
@@ -39,21 +39,22 @@ INFO_TTL = 3600
 MAX_WORKERS_DATA = 5
 FUTU_LOCK = threading.RLock()
 
-# 預設觀察名單
+# 💡 依照要求，永久置頂你的專屬核心名單
 HK_WATCHLIST = [
-    "0700.HK", "0005.HK", "0939.HK", "1398.HK", "3988.HK", "0388.HK",
-    "0066.HK", "0003.HK", "0002.HK", "0016.HK", "0883.HK", "2318.HK",
-    "1299.HK", "0001.HK", "9988.HK", "0175.HK", "0027.HK", "2628.HK",
-    "0011.HK", "0688.HK", "3690.HK", "9618.HK", "0981.HK", "9999.HK",
-    "2382.HK", "0291.HK", "1211.HK", "0267.HK", "2688.HK", "0762.HK",
-    "3033.HK", "2800.HK"
+    "9988.HK", "0700.HK", "0124.HK", "3690.HK", "1810.HK", "0388.HK", # 你的置頂名單
+    "0005.HK", "0939.HK", "1398.HK", "3988.HK", "0066.HK", "0003.HK", 
+    "0002.HK", "0016.HK", "0883.HK", "2318.HK", "1299.HK", "0001.HK", 
+    "0175.HK", "0027.HK", "2628.HK", "0011.HK", "0688.HK", "9618.HK", 
+    "0981.HK", "9999.HK", "2382.HK", "0291.HK", "1211.HK", "0267.HK", 
+    "2688.HK", "0762.HK", "3033.HK", "2800.HK"
 ]
 
 US_WATCHLIST = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
-    "ORCL", "ASML", "AMD", "QCOM", "INTC", "AMAT", "LRCX", "MU",
-    "JPM", "BAC", "GS", "MS", "BRK-B", "COST", "WMT", "HD", "JNJ",
-    "UNH", "PFE", "XOM", "NEE", "UBER", "LITE", "CLX", "NFLX", "ADBE", "CRM", "MSTR", "LLY", "PYPL"
+    "NFLX", "NVDA", "MU", "GOOGL", "MSFT", "META", "TSM", "SPCX", "AVGO", 
+    "TSLA", "AAPL", "AMD", "AMZN", "ORCL", "PLTR", "UNH", "PDD", # 你的置頂名單
+    "ASML", "QCOM", "INTC", "AMAT", "LRCX", "JPM", "BAC", "GS", "MS", 
+    "BRK-B", "COST", "WMT", "HD", "JNJ", "PFE", "XOM", "NEE", "UBER", 
+    "LITE", "CLX", "CRM", "MSTR", "LLY", "PYPL"
 ]
 
 MACRO_TICKERS = {
@@ -70,7 +71,7 @@ h1,h2,h3,h4,h5,h6,p,label,.stMarkdown {color:#e6edf3!important;}
 .decision-card {background:#161b22;border:1px solid #30363d;border-left:5px solid #58a6ff;border-radius:10px;padding:16px;margin:10px 0;}
 .warn-card {background:#2b1a1a;border:1px solid #f85149;border-radius:10px;padding:12px;margin:8px 0;}
 .good-card {background:#102419;border:1px solid #3fb950;border-radius:10px;padding:16px;margin:12px 0;}
-.ladder-box {background:#21262d; border:1px solid #30363d; border-radius:6px; padding:12px; margin-top:10px; font-family: monospace; font-size: 14px;}
+.ladder-box {background:#21262d; border:1px solid #30363d; border-radius:6px; padding:12px; margin-top:10px; font-family: monospace; font-size: 14px; line-height: 1.8;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -160,6 +161,7 @@ def get_full_stock_info(ticker):
         pass
     return result
 
+# ==================== 技術與資金流指標計算 ====================
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
@@ -190,11 +192,50 @@ def calc_mfi(df, period=14):
     neg = money.where(typical < typical.shift(1), 0).rolling(period).sum()
     return 100 - 100 / (1 + pos / neg.replace(0, np.nan))
 
+# 💡 新增：蔡金資金流量指標 (CMF) 深度測量大戶吃貨/出貨力度
+def calc_cmf(df, period=20):
+    high = df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"]
+    low = df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"]
+    close = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
+    vol = df["volume"].iloc[:, 0] if isinstance(df["volume"], pd.DataFrame) else df["volume"]
+    
+    mf_multiplier = ((close - low) - (high - close)) / (high - low).replace(0, np.nan)
+    mf_volume = mf_multiplier * vol
+    cmf = mf_volume.rolling(period).sum() / vol.rolling(period).sum()
+    return cmf
+
 def get_52w_high(df):
     high_col = df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"]
     highs = np.asarray(high_col, dtype=float)
     window = highs[-252:] if len(highs) >= 252 else highs
     return float(np.nanmax(window)) if len(window) > 0 and not np.all(np.isnan(window)) else np.nan
+
+# 💡 新增：生成清晰的 10%-90% 回調階梯顯示板塊 (非表格)
+def generate_drawdown_ladder_html(high52, current_price):
+    if np.isnan(high52) or high52 <= 0: return ""
+    
+    drawdown_pct = (current_price / high52 - 1) * 100
+    next_milestone_pct = math.floor(drawdown_pct / 10) * 10
+    if next_milestone_pct > -10: next_milestone_pct = -10
+    
+    ladder_html = "<div class='ladder-box'>"
+    ladder_html += f"<b>📉 52周高位：<span style='color:#58a6ff'>{high52:.2f}</span> ｜ 現價：<span style='color:#58a6ff'>{current_price:.2f}</span> ｜ 目前跌幅：<span style='color:#f85149'>{drawdown_pct:.1f}%</span></b><br>"
+    ladder_html += "<b>📐 全景回調接貨階梯 (▼10% 至 ▼90%)：</b><br>"
+    
+    for pct in range(10, 100, 10):
+        price_at_pct = high52 * (1 - pct/100)
+        # 用顯眼的紅色標示出你「下一個」會遇到的 10% 關口
+        if -pct == next_milestone_pct:
+            ladder_html += f"<span style='color:#f85149; font-weight:bold; font-size:15px; margin-right:16px; border-bottom: 2px solid #f85149;'>▼{pct}%: {price_at_pct:.2f}</span> "
+        else:
+            ladder_html += f"<span style='color:#8b949e; margin-right:16px;'>▼{pct}%: {price_at_pct:.2f}</span> "
+            
+        # 適度換行讓排版不擁擠
+        if pct == 40 or pct == 80:
+            ladder_html += "<br>"
+            
+    ladder_html += "</div>"
+    return ladder_html
 
 # ==================== 江恩與 TSPR ====================
 def calc_tspr_system(df, left_bars=10):
@@ -270,7 +311,7 @@ def predict_gann_turn_dates(df, forward_trading_days=45):
     hit_df = pd.DataFrame(records).sort_values(["共振強度分", "預測轉勢日期"], ascending=[False, True]) if records else pd.DataFrame()
     return {"top_turns": hit_df.to_dict("records") if not hit_df.empty else []}
 
-# ==================== 決策引擎 (包含資金與超賣評分) ====================
+# ==================== 決策引擎 (包含強化資金流分析) ====================
 @st.cache_data(ttl=OHLCV_TTL)
 def fetch_macro():
     result = {}
@@ -318,8 +359,8 @@ def decision_engine(ticker, df, info):
     macd, macd_signal, _ = calc_macd(close)
     obv_s, obv_ma = calc_obv(df)
     mfi = safe_float(calc_mfi(df).iloc[-1], 50)
+    cmf = safe_float(calc_cmf(df).iloc[-1], 0) # 💡 新增 CMF
     
-    # 狀態
     obv_status = "流入" if safe_float(obv_s.iloc[-1]) > safe_float(obv_ma.iloc[-1]) else "流出"
     drawdown = (price / high52 - 1) * 100 if high52 > 0 and not np.isnan(high52) else 0
     
@@ -337,30 +378,46 @@ def decision_engine(ticker, df, info):
     # 2. 超賣程度 (Oversold Score 0-100)
     os_score = 0
     os_desc = []
-    if rsi < 35: os_score += 40; os_desc.append(f"RSI:{rsi:.1f}")
-    elif rsi < 45: os_score += 20; os_desc.append(f"RSI偏弱")
-    if drawdown <= -30: os_score += 40; os_desc.append(f"重度回調{drawdown:.1f}%")
-    elif drawdown <= -15: os_score += 20; os_desc.append(f"回調{drawdown:.1f}%")
+    if rsi < 35: os_score += 40; os_desc.append(f"RSI({rsi:.1f})嚴重超賣")
+    elif rsi < 45: os_score += 20; os_desc.append(f"RSI({rsi:.1f})偏弱")
+    if drawdown <= -30: os_score += 40; os_desc.append(f"回調過深({drawdown:.1f}%)")
+    elif drawdown <= -15: os_score += 20; os_desc.append(f"正常回調({drawdown:.1f}%)")
     if safe_float(macd.iloc[-1]) > safe_float(macd_signal.iloc[-1]) and safe_float(macd.iloc[-1]) < 0:
         os_score += 20; os_desc.append("MACD底背馳")
     os_score = min(100, os_score)
     os_str = " ｜ ".join(os_desc) if os_desc else "未見明顯超賣"
     
-    # 3. 資金流入程度 (Flow Score 0-100)
+    # 3. 💡 強化資金流分析 (Flow Score 0-100)
     flow_score = 0
-    if obv_status == "流入": flow_score += 50
-    if mfi > 60: flow_score += 50
-    elif mfi > 40: flow_score += 25
-    flow_str = f"OBV:{obv_status} ｜ MFI:{mfi:.1f}"
+    flow_tags = []
+    # OBV 判斷大戶
+    if obv_status == "流入": 
+        flow_score += 35; flow_tags.append("OBV大戶增籌")
+    else: 
+        flow_tags.append("OBV量能減弱")
+        
+    # MFI 判斷買賣氣氛
+    if mfi > 60: 
+        flow_score += 35; flow_tags.append(f"MFI({mfi:.0f})熱度高")
+    elif mfi < 40: 
+        flow_tags.append(f"MFI({mfi:.0f})資金枯竭")
+        
+    # CMF 判斷絕對資金淨流向
+    if cmf > 0.1:
+        flow_score += 30; flow_tags.append(f"CMF({cmf:.2f})強勢流入")
+    elif cmf < -0.1:
+        flow_tags.append(f"CMF({cmf:.2f})顯著流出")
+        
+    flow_str = " ｜ ".join(flow_tags)
     
     # 4. 總技術評分 (Tech Score 0-100)
-    # 權重：超賣 (40%) + 資金 (30%) + 結構 (30%)
     struct_score = 100 if not tspr["is_broken"] and not pd.isna(tspr["active_support"]) else 0
     tech_score = (os_score * 0.4) + (flow_score * 0.3) + (struct_score * 0.3)
     
-    # 止損
+    # 止損與生成回調階梯
     tspr_sup = tspr["active_support"]
     stop_loss_val = min(price * 0.95, tspr_sup if not pd.isna(tspr_sup) else price * 0.95)
+    ladder_html = generate_drawdown_ladder_html(high52, price)
 
     return {
         "ticker": ticker, "name": info.get("name", ticker), "price": round(price, 3), "high52": round(high52, 3),
@@ -368,7 +425,7 @@ def decision_engine(ticker, df, info):
         "oversold_detail": os_str, "flow_detail": flow_str,
         "tspr_status": tspr["status"], "tspr_support": tspr_sup,
         "next_turn_date": next_turn_str, "drawdown": round(drawdown, 2),
-        "stop_loss": round(stop_loss_val, 3), "roe": roe
+        "stop_loss": round(stop_loss_val, 3), "roe": roe, "ladder_html": ladder_html
     }
 
 # ==================== Streamlit UI ====================
@@ -388,8 +445,8 @@ macro_data = fetch_macro()
 regime = classify_market_state(market, macro_data)
 benchmark_df = fetch_ohlcv(regime["benchmark"], period="1y")
 
-st.markdown("# 🎯 終極撈底系統 V6.0")
-st.caption(f"全景技術監控與深度轉勢分析｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
+st.markdown("# 🎯 終極撈底系統 V6.5")
+st.caption(f"全景技術監控與資金流剖析｜專屬核心名單置頂｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
 
 tabs = st.tabs([
     "🌍 大市深度剖析 (Macro & Gann)", 
@@ -398,7 +455,7 @@ tabs = st.tabs([
     "📈 深度技術圖表 (Charts)"
 ])
 
-# ==================== Tab 1: 大市深度剖析 (深度江恩理據) ====================
+# ==================== Tab 1: 大市深度剖析 ====================
 with tabs[0]:
     st.subheader(f"大市氣氛溫度計：{regime['name']}")
     st.info(f"💡 **資金對策：** {regime['strategy']}")
@@ -431,7 +488,7 @@ with tabs[0]:
         if not other_turns.empty:
             st.dataframe(other_turns[["預測轉勢日期", "星期", "共振強度分", "時間周期依據"]], use_container_width=True, hide_index=True)
 
-# ==================== Tab 2: 全市場技術排行 (核心需求) ====================
+# ==================== Tab 2: 全市場技術排行 ====================
 with tabs[1]:
     st.subheader("📊 關注名單：技術評分總排行")
     st.caption("將所有股票按『超賣度 + 資金流向 + 結構』的綜合技術評分 (0-100) 由高至低排列。一眼看清 PE、超賣細節與資金動向。")
@@ -456,35 +513,50 @@ with tabs[1]:
         if results:
             df_results = pd.DataFrame(results).sort_values("tech_score", ascending=False)
             
-            df_results = df_results[[
+            # 儲存到 session state 以供 Tab 3 雷達使用
+            st.session_state["latest_results"] = df_results
+            
+            display_df = df_results[[
                 "ticker", "name", "tech_score", "pe", 
                 "oversold_detail", "flow_detail", 
                 "tspr_status", "next_turn_date", "drawdown", "stop_loss"
             ]].rename(columns={
                 "ticker": "代碼", "name": "名稱", "tech_score": "技術評分", 
-                "pe": "現時PE", "oversold_detail": "超賣細節", "flow_detail": "資金流細節",
+                "pe": "現時PE", "oversold_detail": "超賣細節", "flow_detail": "資金流細節(OBV/MFI/CMF)",
                 "tspr_status": "TSPR 狀態", "next_turn_date": "下個轉勢日", 
                 "drawdown": "高位回調%", "stop_loss": "止損位"
             })
             
-            st.success("排名完成！分數越高，代表技術上越超賣且資金有回流跡象，是潛在的右側買入點。")
-            st.dataframe(df_results, use_container_width=True, hide_index=True)
+            st.success("排名完成！分數越高，代表技術上越超賣且資金有強勢回流跡象，是潛在的右側接貨點。")
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-# ==================== Tab 3: 撈底黃金雷達 (階梯) ====================
+# ==================== Tab 3: 撈底黃金雷達 (含全景回調階梯) ====================
 with tabs[2]:
-    st.subheader("🎯 撈底黃金雷達 (含黃金回調階梯)")
-    st.caption("在 Tab 2 排行榜中，嚴格過濾出：技術評分 >= 50 且 有明顯超賣特徵的股票。")
+    st.subheader("🎯 撈底黃金雷達 (含全景回調接貨階梯)")
+    st.caption("嚴格過濾出：技術評分 >= 40 且 有明顯超賣特徵的股票，並顯示其下方所有的 10% 區間對應價位。")
     
-    if st.button("🚀 啟動撈底掃描", type="primary", key="screener_btn"):
-        # 覆用相同邏輯，此處為求簡化顯示流程，實務上可共用 Session State，這裡作獨立展示
-        st.info("請先在『Tab 2: 全市場技術排行』點擊載入，名單會自動過濾。")
-        # 假設已經有 df_results (這裡略去重複抓取代碼，直接說明使用方式)
-        st.markdown("""
-        **操作指南：**
-        1. 在 Tab 2 載入數據。
-        2. 尋找 **技術評分 > 60**，且 **資金流細節** 顯示「OBV:流入」的股票。
-        3. 利用其「高位回調%」和「止損位」計算注碼。
-        """)
+    if "latest_results" not in st.session_state:
+        st.info("請先在『Tab 2: 全市場技術排行』點擊載入，雷達掃描名單會自動為你過濾生成。")
+    else:
+        df_results = st.session_state["latest_results"]
+        # 過濾邏輯：需要一定的超賣或資金流入評分
+        bottom_fish_df = df_results[df_results["tech_score"] >= 40].copy()
+        
+        if bottom_fish_df.empty:
+            st.warning("目前沒有符合【高超賣 + 資金流入】標準的股票。切勿夾硬買入。")
+        else:
+            st.success(f"雷達鎖定 {len(bottom_fish_df)} 隻潛在撈底目標！")
+            
+            for _, row in bottom_fish_df.iterrows():
+                st.markdown(
+                    f"<div class='good-card'>"
+                    f"⭐ <b style='font-size:18px; color:#58a6ff;'>{row['ticker']} {row['name']}</b> ｜ 技術評分: <b style='color:#f85149;'>{row['tech_score']}</b> ｜ 現時PE: <b>{row['pe']}</b><br>"
+                    f"<b>超賣細節：</b> {row['oversold_detail']}<br>"
+                    f"<b>資金動向：</b> <span style='color:#3fb950; font-weight:bold;'>{row['flow_detail']}</span><br>"
+                    f"<b>行動建議：</b> 配合江恩轉勢日 <b>{row['next_turn_date']}</b>，企穩 <b>{row['tspr_status']}</b>（{row['tspr_support']}）可建首注。破位止損：<b>{row['stop_loss']}</b><br>"
+                    f"{row['ladder_html']}"
+                    f"</div>", unsafe_allow_html=True
+                )
 
 # ==================== Tab 4: 深度技術圖表 ====================
 with tabs[3]:
@@ -492,7 +564,7 @@ with tabs[3]:
     st.caption("輸入代碼確認 TSPR 支持線與資金流 (成交量/MACD) 的實際圖表表現。")
     
     col_q1, col_q2 = st.columns([1, 4])
-    with col_q1: default_tk = st.selectbox("快捷選擇", ["0700.HK", "2800.HK", "NVDA", "AAPL"])
+    with col_q1: default_tk = st.selectbox("快捷選擇", ["0700.HK", "9988.HK", "NVDA", "NFLX"])
     with col_q2: ticker = st.text_input("輸入股票代碼以查看圖表", default_tk, key="chart_tk").upper()
     
     if ticker:
