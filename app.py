@@ -19,12 +19,13 @@ from plotly.subplots import make_subplots
 warnings.filterwarnings("default", category=RuntimeWarning)
 
 try:
-    from futu import OpenQuoteContext, RET_OK, KLType
+    # 💡 修復 1: 引入 AuType 以進行前復權
+    from futu import OpenQuoteContext, RET_OK, KLType, AuType
     FUTU_AVAILABLE = True
 except ImportError:
     FUTU_AVAILABLE = False
 
-st.set_page_config(page_title="📈 終極撈底系統 V8.0 (時空整合 + 專業架構)", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="📈 終極撈底系統 V8.6 (極端錯價清洗 + 智能倉位)", page_icon="🎯", layout="wide")
 
 # ==================== 系統常數與配色 ====================
 C_RED, C_GREEN, C_ORANGE = "#f85149", "#3fb950", "#d29922"
@@ -67,6 +68,7 @@ h1,h2,h3,h4,h5,h6,p,label,.stMarkdown {color:#e6edf3!important;}
 .ladder-box {background:#21262d; border:1px solid #30363d; border-radius:6px; padding:12px; margin-top:10px; font-family: monospace; font-size: 14px; line-height: 1.8;}
 .wave-box {background:#1a202c; border:1px solid #4a148c; border-radius:8px; padding:16px; margin-top:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);}
 .extended-wave {border-color: #d29922; background: #2b2210;}
+.pos-box {background:rgba(88,166,255,0.1); border:1px dashed #58a6ff; border-radius:6px; padding:10px; margin-top:10px; font-size: 14px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -95,7 +97,7 @@ def init_futu():
     except Exception: return None
 quote_ctx = init_futu()
 
-# ==================== 數據獲取模組 (加入隨機延遲防封鎖) ====================
+# ==================== 數據獲取模組 (加入前復權防禦) ====================
 def requested_start(period):
     mapping = {"1mo": 35, "3mo": 100, "6mo": 200, "1y": 400, "2y": 800}
     return (datetime.now() - timedelta(days=mapping.get(period, 400))).strftime("%Y-%m-%d")
@@ -106,14 +108,19 @@ def fetch_ohlcv(ticker, period="1y"):
         try:
             start = requested_start(period)
             with FUTU_LOCK:
-                ret, data, _ = quote_ctx.request_history_kline(to_futu(ticker), start=start, end=None, ktype=KLType.K_DAY, max_count=1000)
+                # 💡 修復 2: 加入 autype=AuType.QFQ 確保拆股/派息已復權，避免歷史高位失真
+                ret, data, _ = quote_ctx.request_history_kline(
+                    to_futu(ticker), start=start, end=None, 
+                    ktype=KLType.K_DAY, max_count=1000, 
+                    autype=AuType.QFQ if 'AuType' in globals() else None
+                )
             if ret == RET_OK and data is not None and not data.empty:
                 df = data[["time_key", "open", "high", "low", "close", "volume"]].rename(columns={"time_key": "date"})
                 df["date"] = pd.to_datetime(df["date"])
                 return df.set_index("date").sort_index().dropna()
         except Exception: pass
     try:
-        time.sleep(random.uniform(0.1, 0.3)) # 💡 防封鎖機制
+        time.sleep(random.uniform(0.1, 0.3))
         df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False, threads=False)
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -141,7 +148,10 @@ def get_full_stock_info(ticker):
     except Exception: pass
     return result
 
-# ==================== 核心指標與引擎庫 (架構重整，統一調用) ====================
+# ==================== 核心指標與引擎庫 (加入錯價清洗) ====================
+def extract_col(df, col_name):
+    return df[col_name].iloc[:, 0] if isinstance(df[col_name], pd.DataFrame) else df[col_name]
+
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
@@ -152,9 +162,6 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     macd = series.ewm(span=fast, adjust=False).mean() - series.ewm(span=slow, adjust=False).mean()
     sig = macd.ewm(span=signal, adjust=False).mean()
     return macd, sig, macd - sig
-
-def extract_col(df, col_name):
-    return df[col_name].iloc[:, 0] if isinstance(df[col_name], pd.DataFrame) else df[col_name]
 
 def calc_obv(df):
     close, vol = extract_col(df, "close"), extract_col(df, "volume")
@@ -168,8 +175,21 @@ def calc_cmf(df, period=20):
 
 def get_52w_high(df):
     highs = np.asarray(extract_col(df, "high"), dtype=float)
-    window = highs[-252:] if len(highs) >= 252 else highs
-    return float(np.nanmax(window)) if len(window) > 0 and not np.all(np.isnan(window)) else np.nan
+    closes = np.asarray(extract_col(df, "close"), dtype=float)
+    
+    window_hi = highs[-252:] if len(highs) >= 252 else highs
+    window_cl = closes[-252:] if len(closes) >= 252 else closes
+    
+    if len(window_hi) > 0 and not np.all(np.isnan(window_hi)):
+        max_hi = float(np.nanmax(window_hi))
+        max_cl = float(np.nanmax(window_cl))
+        
+        # 💡 修復 3: 數據清洗 (Data Cleansing) - 消滅幽靈錯價針
+        # 如果盤中最高價離譜地高於最高收市價超過 25% (如 Yahoo Finance 合併出錯)，則視為錯價，退回使用最高收市價
+        if max_hi > max_cl * 1.25:
+            return max_cl
+        return max_hi
+    return np.nan
 
 def calc_tspr_system(df, left_bars=10):
     if df is None or len(df) < 30: return {"active_support": np.nan, "is_broken": False, "status": "資料不足"}
@@ -336,8 +356,8 @@ def generate_drawdown_ladder_text(high52, current_price):
         else: parts.append(f"▼{pct}%({price_at_pct:.1f})")
     return " | ".join(parts)
 
-# ==================== 決策與見底概率引擎 (結合流動性防護) ====================
-def decision_engine(ticker, df, info):
+# ==================== 決策與見底概率引擎 (結合 MTF 與 RS) ====================
+def decision_engine(ticker, df, info, benchmark_df):
     if df is None or len(df) < 130: return None
     close = extract_col(df, "close")
     price = safe_float(close.iloc[-1])
@@ -348,6 +368,19 @@ def decision_engine(ticker, df, info):
     obv_s, obv_ma = calc_obv(df)
     cmf = safe_float(calc_cmf(df).iloc[-1], 0)
     
+    # 周線合成
+    df_weekly = df.resample('W').agg({'open':'first', 'high':'max', 'low':'min', 'close':'last'}).dropna()
+    w_rsi = safe_float(calc_rsi(df_weekly['close']).iloc[-1], 50) if len(df_weekly) > 14 else 50
+    
+    # 相對強弱
+    if benchmark_df is not None and len(benchmark_df) >= 60 and len(df) >= 60:
+        bench_close = extract_col(benchmark_df, "close")
+        stock_ret = close.iloc[-1] / close.iloc[-60] - 1
+        bench_ret = bench_close.iloc[-1] / bench_close.iloc[-60] - 1
+        rs_60 = (stock_ret - bench_ret) * 100
+    else:
+        rs_60 = 0.0
+
     obv_status = "流入" if safe_float(obv_s.iloc[-1]) > safe_float(obv_ma.iloc[-1]) else "流出"
     drawdown = (price / high52 - 1) * 100 if high52 > 0 and not np.isnan(high52) else 0
     
@@ -356,27 +389,32 @@ def decision_engine(ticker, df, info):
     nt = turn_info["top_turns"][0] if turn_info["top_turns"] else None
     next_turn_str = f"{nt['預測轉勢日期']} ({nt['共振強度分']}分)" if nt else "—"
 
-    # 💡 股票見底百分比評分系統 (加入防飛刀機制)
+    # 💡 見底百分比評分系統
     bottom_prob = 0
-    if drawdown <= -40: bottom_prob += 35
-    elif drawdown <= -25: bottom_prob += 20
+    if drawdown <= -40: bottom_prob += 25
+    elif drawdown <= -25: bottom_prob += 15
     elif drawdown <= -15: bottom_prob += 10
     
-    if rsi < 30: bottom_prob += 20
+    if rsi < 30: bottom_prob += 15
     elif rsi < 40: bottom_prob += 10
+    
+    if w_rsi < 35: bottom_prob += 15
+    elif w_rsi < 45: bottom_prob += 5
     
     if safe_float(macd.iloc[-1]) > safe_float(macd_signal.iloc[-1]) and safe_float(macd.iloc[-1]) < 0:
         bottom_prob += 15
         
-    if cmf > 0.05: bottom_prob += 15
+    if cmf > 0.05: bottom_prob += 10
     if obv_status == "流入": bottom_prob += 10
+    
+    if rs_60 > 10: bottom_prob += 10
     
     if not tspr["is_broken"] and not pd.isna(tspr["active_support"]):
         dist_to_supp = (price / tspr["active_support"] - 1) * 100
-        if 0 <= dist_to_supp <= 5: bottom_prob += 15 
+        if 0 <= dist_to_supp <= 5: bottom_prob += 10 
         
-    # 防飛刀機制：大跌且資金極度流出，強制扣分
     if drawdown <= -40 and cmf < -0.15: bottom_prob -= 30 
+    if rs_60 < -20: bottom_prob -= 15 
         
     bottom_prob = max(0, min(99, bottom_prob)) 
     
@@ -387,7 +425,9 @@ def decision_engine(ticker, df, info):
     if obv_status == "流入": flow_tags.append("OBV增籌")
     if cmf > 0.1: flow_tags.append(f"CMF({cmf:.2f})流入")
     elif cmf < -0.1: flow_tags.append(f"CMF({cmf:.2f})流出")
+    
     flow_str = " ｜ ".join(flow_tags) if flow_tags else "資金平淡"
+    rs_mtf_str = f"周RSI:{w_rsi:.0f} ｜ 60日大市相對強弱:{rs_60:+.1f}%"
     
     tspr_sup = tspr["active_support"]
     stop_loss_val = min(price * 0.95, tspr_sup if not pd.isna(tspr_sup) else price * 0.95)
@@ -395,7 +435,8 @@ def decision_engine(ticker, df, info):
     return {
         "ticker": ticker, "name": info.get("name", ticker), "price": round(price, 3), "high52": round(high52, 3),
         "pe": pe_str, "bottom_prob": bottom_prob, 
-        "flow_detail": flow_str, "tspr_status": tspr["status"], "tspr_support": tspr_sup,
+        "flow_detail": flow_str, "rs_mtf": rs_mtf_str, 
+        "tspr_status": tspr["status"], "tspr_support": tspr_sup,
         "next_turn_date": next_turn_str, "drawdown": round(drawdown, 2),
         "stop_loss": round(stop_loss_val, 3), 
         "ladder_html": generate_drawdown_ladder_html(high52, price), 
@@ -413,21 +454,22 @@ with st.sidebar:
     else: st.info("ℹ️ 使用 Yahoo 備援報價")
     if st.button("🔄 立即刷新快取"): st.cache_data.clear(); st.rerun()
 
-st.markdown("# 🎯 終極撈底系統 V8.0")
-st.caption(f"波浪擴展預測 + 深度防護引擎｜時空交匯圖表整合｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
+idx_tk = "^GSPC" if market == "🇺🇸 核心與美股" else "^HSI"
+benchmark_df = fetch_ohlcv(idx_tk, period="1y")
+
+st.markdown("# 🎯 終極撈底系統 V8.6")
+st.caption(f"波浪擴展預測 + 智能倉位計算 + 多時空共振｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
 
 tabs = st.tabs([
     "🌍 大市深度分析 (三大指數推演)", 
     "📊 關注名單總排行 (置頂+階梯)", 
-    "🎯 撈底黃金雷達 (Screener)", 
+    "🎯 撈底黃金雷達 (含智能倉位)", 
     "📈 深度技術圖表 (時空視覺化)"
 ])
 
 # ==================== Tab 1: 大市深度分析 ====================
 with tabs[0]:
     st.subheader("🌍 宏觀指數深度拆解 (恒指 / 標普 / 納指)")
-    st.caption("每個指數獨立進行：動能溫度計判斷、江恩轉勢日深度推算，以及歷史波浪動態擴展推演。自動判斷是否進入延長浪。")
-    
     idx_map = {"恒生指數 (HSI)": "^HSI", "標普500 (SPX)": "^GSPC", "納斯達克 (NDX)": "^NDX"}
     cols = st.columns(3)
     
@@ -470,7 +512,7 @@ with tabs[0]:
 # ==================== Tab 2: 關注名單總排行 ====================
 with tabs[1]:
     st.subheader("📊 關注名單：技術評分總排行")
-    st.caption("以『見底概率%』為核心（內建防飛刀機制）。專屬名單永久置頂，全景回調階梯優先顯示。")
+    st.caption("以『見底概率%』為核心，結合 MTF 周線共振與相對強弱。專屬名單永久置頂，全景回調階梯優先顯示。")
     
     tickers = US_WATCHLIST if market == "🇺🇸 核心與美股" else HK_WATCHLIST
     active_pinned = US_PINNED if market == "🇺🇸 核心與美股" else HK_PINNED
@@ -485,7 +527,7 @@ with tabs[1]:
         progress.progress(50, text="運算見底概率與江恩模型...")
         results = []
         for i, tk in enumerate(tickers):
-            res = decision_engine(tk, data_map.get(tk), info_map.get(tk, {}))
+            res = decision_engine(tk, data_map.get(tk), info_map.get(tk, {}), benchmark_df)
             if res: results.append(res)
             progress.progress(50 + int((i+1)/len(tickers)*50))
         progress.empty()
@@ -498,10 +540,10 @@ with tabs[1]:
             
             display_df = df_results[[
                 "置頂", "ticker", "name", "bottom_prob", "ladder_text", 
-                "pe", "flow_detail", "tspr_status", "next_turn_date", "drawdown", "stop_loss"
+                "pe", "flow_detail", "rs_mtf", "tspr_status", "next_turn_date", "drawdown", "stop_loss"
             ]].rename(columns={
                 "ticker": "代碼", "name": "名稱", "bottom_prob": "見底概率%", "ladder_text": "🎯 全景回調階梯", 
-                "pe": "PE", "flow_detail": "資金流", "tspr_status": "TSPR 狀態", 
+                "pe": "PE", "flow_detail": "資金流", "rs_mtf": "動能與強弱", "tspr_status": "TSPR 狀態", 
                 "next_turn_date": "下個轉勢日", "drawdown": "高位回調%", "stop_loss": "止損位"
             })
             
@@ -515,18 +557,26 @@ with tabs[1]:
                 st.markdown(
                     f"<div class='decision-card'>"
                     f"⭐ <b style='font-size:18px; color:#58a6ff;'>{row['ticker']} {row['name']}</b> ｜ 見底概率: <b style='color:{prob_color}; font-size:16px;'>{row['bottom_prob']}%</b> ｜ 現時PE: <b>{row['pe']}</b><br>"
-                    f"<b>資金動向：</b> {row['flow_detail']}<br>"
+                    f"<b>資金動向：</b> {row['flow_detail']} ｜ <b>時空動能：</b> {row['rs_mtf']}<br>"
                     f"<b>行動建議：</b> 配合轉勢日 <b>{row['next_turn_date']}</b>，企穩 <b>{row['tspr_status']}</b>（{row['tspr_support']}）可建首注。<br>"
                     f"{row['ladder_html']}"
                     f"</div>", unsafe_allow_html=True
                 )
 
-# ==================== Tab 3: 撈底黃金雷達 ====================
+# ==================== Tab 3: 撈底黃金雷達 (含智能倉位計算機) ====================
 with tabs[2]:
-    st.subheader("🎯 撈底黃金雷達")
-    st.caption("自動過濾出全市場：見底概率 >= 45% 的超跌優質股，適合進行右側交易。")
+    st.subheader("🎯 撈底黃金雷達 & 智能倉位計算機")
+    st.caption("自動過濾出全市場：見底概率 >= 45% 的超跌優質股，並針對你的資金規模給出嚴格的買入股數建議。")
+    
+    c1, c2 = st.columns(2)
+    with c1: acc_size = st.number_input("組合總資金 (如 100000 USD/HKD)", min_value=1000.0, value=100000.0, step=5000.0)
+    with c2: risk_limit = st.slider("單筆交易最大可承受虧損 (%)", 0.5, 3.0, 1.0, 0.1)
+    
+    max_risk_amount = acc_size * (risk_limit / 100)
+    st.info(f"🛡️ 嚴格風控：每筆交易如果觸及止損，你的最大虧損將被控制在 **{max_risk_amount:.0f}** 內。")
+
     if "latest_results" not in st.session_state:
-        st.info("請先在『Tab 2: 關注名單』點擊載入，雷達掃描名單會自動為你過濾生成。")
+        st.warning("請先在『Tab 2: 關注名單』點擊載入，雷達掃描名單會自動為你過濾生成。")
     else:
         df_results = st.session_state["latest_results"]
         bottom_fish_df = df_results[df_results["bottom_prob"] >= 45].copy()
@@ -535,19 +585,28 @@ with tabs[2]:
         else:
             st.success(f"雷達鎖定 {len(bottom_fish_df)} 隻高潛力撈底目標！")
             for _, row in bottom_fish_df.iterrows():
+                risk_per_share = row['price'] - row['stop_loss']
+                if risk_per_share > 0:
+                    suggested_shares = int(max_risk_amount / risk_per_share)
+                    cost = suggested_shares * row['price']
+                    pos_html = f"<div class='pos-box'>💰 <b>智能注碼計算</b>：建議買入 <b>{suggested_shares} 股</b> (動用資金: {cost:.0f}) ｜ 止損位: <b>{row['stop_loss']}</b></div>"
+                else:
+                    pos_html = f"<div class='pos-box' style='border-color:#f85149;'>⚠️ 現價低於或太接近止損位 ({row['stop_loss']})，無法計算安全注碼，請等待企穩。</div>"
+
                 st.markdown(
                     f"<div class='good-card'>"
                     f"⭐ <b style='font-size:18px; color:#58a6ff;'>{row['ticker']} {row['name']}</b> ｜ 見底概率: <b style='color:#3fb950;'>{row['bottom_prob']}%</b><br>"
-                    f"<b>資金動向：</b> {row['flow_detail']}<br>"
+                    f"<b>資金動向：</b> {row['flow_detail']} ｜ <b>時空動能：</b> {row['rs_mtf']}<br>"
                     f"<b>行動建議：</b> 配合轉勢日 <b>{row['next_turn_date']}</b>，企穩 <b>{row['tspr_status']}</b>（{row['tspr_support']}）可建首注。<br>"
+                    f"{pos_html}"
                     f"{row['ladder_html']}"
                     f"</div>", unsafe_allow_html=True
                 )
 
-# ==================== Tab 4: 深度技術圖表 (時空視覺化升級) ====================
+# ==================== Tab 4: 深度技術圖表 ====================
 with tabs[3]:
     st.subheader("📈 深度技術圖表｜時空交匯視覺化")
-    st.caption("💡 **升級亮點**：圖表會自動畫出 **TSPR 支持線** (綠虛線)，並以 **垂直紅虛線** 標示未來預測的江恩轉勢日。讓你看清「價格支持」與「時間窗口」是否完美交匯。")
+    st.caption("圖表會自動畫出 **TSPR 支持線** (綠虛線)，並以 **垂直黃虛線** 標示未來預測的江恩轉勢日。")
     
     col_q1, col_q2 = st.columns([1, 4])
     with col_q1: default_tk = st.selectbox("快捷選擇", ["0700.HK", "9988.HK", "NVDA", "NFLX"])
@@ -558,40 +617,33 @@ with tabs[3]:
         if chart_df is not None and len(chart_df) > 30:
             close = extract_col(chart_df, "close")
             tspr_res = calc_tspr_system(chart_df)
-            turn_res = predict_gann_turn_dates(chart_df, 45) # 預測未來45天轉勢日
+            turn_res = predict_gann_turn_dates(chart_df, 45)
             
             fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03)
             
-            # K線圖
             fig.add_trace(go.Candlestick(x=chart_df.index, open=extract_col(chart_df, "open"), high=extract_col(chart_df, "high"), low=extract_col(chart_df, "low"), close=close, name="K線"), row=1, col=1)
             
-            # 💡 視覺化 1: 畫出 TSPR 支持線
             if not pd.isna(tspr_res["active_support"]):
                 line_col = "#3fb950" if not tspr_res["is_broken"] else "#ef5350"
                 fig.add_hline(y=tspr_res["active_support"], line_dash="dash", line_color=line_col, annotation_text=f"TSPR 支持 ({tspr_res['active_support']})", row=1, col=1)
 
-            # 💡 視覺化 2: 畫出未來的江恩轉勢日 (垂直線)
             if turn_res.get("top_turns"):
-                # 只取最強的 2 個未來日期畫線
                 for t in turn_res["top_turns"][:2]:
                     target_dt = pd.to_datetime(t["預測轉勢日期"])
                     fig.add_vline(x=target_dt, line_dash="dot", line_color="#d29922", annotation_text=f"轉勢窗", annotation_position="top right", row=1, col=1)
 
-            # 成交量
             vol = extract_col(chart_df, "volume")
             op = extract_col(chart_df, "open")
             vol_colors = ["#3fb950" if c>=o else "#f85149" for c, o in zip(close, op)]
             fig.add_trace(go.Bar(x=chart_df.index, y=vol, marker_color=vol_colors, name="成交量"), row=2, col=1)
             
-            # MACD
             macd, sig, hist = calc_macd(close)
             fig.add_trace(go.Bar(x=chart_df.index, y=hist, marker_color=[C_GREEN if x>=0 else C_RED for x in hist.fillna(0)], name="MACD Hist"), row=3, col=1)
             fig.add_trace(go.Scatter(x=chart_df.index, y=macd, line=dict(color=C_BLUE), name="MACD"), row=3, col=1)
             fig.add_trace(go.Scatter(x=chart_df.index, y=sig, line=dict(color=C_ORANGE), name="Signal"), row=3, col=1)
             
-            # 設定 X 軸範圍 (向未來延伸以顯示轉勢日)
             last_date = chart_df.index[-1]
-            future_date = last_date + timedelta(days=20)
+            future_date = last_date + timedelta(days=25)
             fig.update_layout(xaxis=dict(range=[chart_df.index[0], future_date]), height=800, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
             
             st.plotly_chart(fig, use_container_width=True)
