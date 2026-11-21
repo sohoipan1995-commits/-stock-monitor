@@ -4,6 +4,7 @@ import warnings
 import threading
 import sqlite3
 import math
+import random
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -23,23 +24,16 @@ try:
 except ImportError:
     FUTU_AVAILABLE = False
 
-st.set_page_config(page_title="📈 終極撈底系統 V7.5 (智能波浪擴展 + 深度宏觀)", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="📈 終極撈底系統 V8.0 (時空整合 + 專業架構)", page_icon="🎯", layout="wide")
 
-C_RED = "#f85149"
-C_GREEN = "#3fb950"
-C_ORANGE = "#d29922"
-C_BLUE = "#58a6ff"
-C_PURPLE = "#bc8cff"
-C_GREY = "#8b949e"
-C_BG = "#0d1117"
-
-AUTO_REFRESH_SEC = 1800
-OHLCV_TTL = 1800
-INFO_TTL = 3600
+# ==================== 系統常數與配色 ====================
+C_RED, C_GREEN, C_ORANGE = "#f85149", "#3fb950", "#d29922"
+C_BLUE, C_PURPLE, C_GREY, C_BG = "#58a6ff", "#bc8cff", "#8b949e", "#0d1117"
+AUTO_REFRESH_SEC, OHLCV_TTL, INFO_TTL = 1800, 1800, 3600
 MAX_WORKERS_DATA = 5
 FUTU_LOCK = threading.RLock()
 
-# 💡 你的專屬永久置頂名單 (絕對保留)
+# ==================== 專屬名單 (嚴格保留, 絕不刪減) ====================
 HK_PINNED = ["9988.HK", "0700.HK", "0124.HK", "3690.HK", "1810.HK", "0388.HK"]
 US_PINNED = ["NFLX", "NVDA", "GOOGL", "MSFT", "META", "MU", "TSM", "SPCX", "AVGO", 
              "TSLA", "AAPL", "AMD", "AMZN", "ORCL", "PLTR", "UNH", "PDD"]
@@ -99,9 +93,9 @@ def init_futu():
             ret, _ = ctx.get_market_snapshot(["HK.00700"])
         return ctx if ret == RET_OK else None
     except Exception: return None
-
 quote_ctx = init_futu()
 
+# ==================== 數據獲取模組 (加入隨機延遲防封鎖) ====================
 def requested_start(period):
     mapping = {"1mo": 35, "3mo": 100, "6mo": 200, "1y": 400, "2y": 800}
     return (datetime.now() - timedelta(days=mapping.get(period, 400))).strftime("%Y-%m-%d")
@@ -119,6 +113,7 @@ def fetch_ohlcv(ticker, period="1y"):
                 return df.set_index("date").sort_index().dropna()
         except Exception: pass
     try:
+        time.sleep(random.uniform(0.1, 0.3)) # 💡 防封鎖機制
         df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False, threads=False)
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -146,7 +141,7 @@ def get_full_stock_info(ticker):
     except Exception: pass
     return result
 
-# ==================== 技術與波浪推演引擎 (V7.5 深度升級版) ====================
+# ==================== 核心指標與引擎庫 (架構重整，統一調用) ====================
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
@@ -158,42 +153,90 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     sig = macd.ewm(span=signal, adjust=False).mean()
     return macd, sig, macd - sig
 
+def extract_col(df, col_name):
+    return df[col_name].iloc[:, 0] if isinstance(df[col_name], pd.DataFrame) else df[col_name]
+
 def calc_obv(df):
-    close = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
-    vol = df["volume"].iloc[:, 0] if isinstance(df["volume"], pd.DataFrame) else df["volume"]
-    direction = np.sign(close.diff()).fillna(0)
-    obv = (direction * vol).cumsum()
+    close, vol = extract_col(df, "close"), extract_col(df, "volume")
+    obv = (np.sign(close.diff()).fillna(0) * vol).cumsum()
     return obv, obv.rolling(10).mean()
 
-def calc_mfi(df, period=14):
-    high, low, close, vol = [df[c].iloc[:, 0] if isinstance(df[c], pd.DataFrame) else df[c] for c in ["high", "low", "close", "volume"]]
-    typical = (high + low + close) / 3
-    money = typical * vol
-    pos = money.where(typical > typical.shift(1), 0).rolling(period).sum()
-    neg = money.where(typical < typical.shift(1), 0).rolling(period).sum()
-    return 100 - 100 / (1 + pos / neg.replace(0, np.nan))
-
 def calc_cmf(df, period=20):
-    high, low, close, vol = [df[c].iloc[:, 0] if isinstance(df[c], pd.DataFrame) else df[c] for c in ["high", "low", "close", "volume"]]
-    mf_multiplier = ((close - low) - (high - close)) / (high - low).replace(0, np.nan)
-    mf_volume = mf_multiplier * vol
-    return mf_volume.rolling(period).sum() / vol.rolling(period).sum()
+    high, low, close, vol = [extract_col(df, c) for c in ["high", "low", "close", "volume"]]
+    mf_vol = (((close - low) - (high - close)) / (high - low).replace(0, np.nan)) * vol
+    return mf_vol.rolling(period).sum() / vol.rolling(period).sum()
 
 def get_52w_high(df):
-    highs = np.asarray(df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"], dtype=float)
+    highs = np.asarray(extract_col(df, "high"), dtype=float)
     window = highs[-252:] if len(highs) >= 252 else highs
     return float(np.nanmax(window)) if len(window) > 0 and not np.all(np.isnan(window)) else np.nan
 
-# 💡 V7.5 智能波浪推演引擎 (解決過期日期 BUG，加入擴展浪與黃金分割)
+def calc_tspr_system(df, left_bars=10):
+    if df is None or len(df) < 30: return {"active_support": np.nan, "is_broken": False, "status": "資料不足"}
+    lows = np.asarray(extract_col(df, "low"), dtype=float)
+    closes = np.asarray(extract_col(df, "close"), dtype=float)
+    active_support, is_broken = None, False
+    for i in range(left_bars + 5, len(df)):
+        pivot_idx = i - 5
+        window = lows[max(0, pivot_idx - left_bars) : i + 1]
+        if len(window) > 0 and not np.all(np.isnan(window)):
+            if not np.isnan(lows[pivot_idx]) and lows[pivot_idx] == np.nanmin(window):
+                active_support, is_broken = float(lows[pivot_idx]), False
+        if active_support is not None and closes[i] < active_support: is_broken = True
+    status_str = "🔴 跌穿10日支持" if is_broken else ("🟢 守穩10日支持" if active_support else "⚪ 尋底中")
+    return {"active_support": round(active_support, 3) if active_support else np.nan, "is_broken": is_broken, "status": status_str}
+
+def predict_gann_turn_dates(df, forward_trading_days=45):
+    if df is None or len(df) < 60: return {"top_turns": []}
+    dates = pd.DatetimeIndex(df.index)
+    highs, lows = np.asarray(extract_col(df, "high"), dtype=float), np.asarray(extract_col(df, "low"), dtype=float)
+    n = len(df)
+    pivots, offset = [], max(0, n - 180)
+    for i in range(7, n - offset - 7):
+        g_idx = offset + i
+        w_hi, w_lo = highs[g_idx - 7 : g_idx + 8], lows[g_idx - 7 : g_idx + 8]
+        if len(w_hi) > 0 and highs[g_idx] == np.nanmax(w_hi): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段頂部", "price": highs[g_idx]})
+        if len(w_lo) > 0 and lows[g_idx] == np.nanmin(w_lo): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段底部", "price": lows[g_idx]})
+            
+    pivots = sorted({p["idx"]: p for p in pivots}.values(), key=lambda x: x["idx"])
+    future_bdays = pd.bdate_range(start=dates[-1] + timedelta(days=1), periods=forward_trading_days)
+    
+    trading_cycles = {15: 1.5, 21: 2.0, 30: 2.5, 45: 3.5, 60: 3.0, 90: 4.5, 120: 3.5}
+    gann_seasonal_dates = [(3, 21, "春分(0°)"), (6, 21, "夏至(90°)"), (9, 22, "秋分(180°)"), (12, 21, "冬至(270°)"), (2, 4, "立春"), (5, 5, "立夏"), (8, 7, "立秋"), (11, 7, "立冬")]
+    
+    records = []
+    for step, f_date in enumerate(future_bdays, start=1):
+        future_idx = (n - 1) + step
+        score, reasons = 0.0, []
+        for pv in pivots[-4:]:
+            el_td = future_idx - pv["idx"]
+            if el_td in trading_cycles:
+                score += trading_cycles[el_td]
+                reasons.append(f"基於 {pv['date'].strftime('%Y-%m-%d')} {pv['type']}({pv['price']:.1f}) 疊加 {el_td} 交易日週期")
+            el_cd = (f_date - pv["date"]).days
+            if any(abs(el_cd - cc) <= 1 for cc in [30, 45, 60, 90]):
+                score += 1.5
+                reasons.append(f"基於 {pv['date'].strftime('%Y-%m-%d')} {pv['type']} 疊加自然日循環")
+                
+        for m, d, name in gann_seasonal_dates:
+            if abs((f_date - pd.Timestamp(year=f_date.year, month=m, day=d)).days) <= 1:
+                score += 3.5; reasons.append(f"觸發江恩節氣：{name}")
+                
+        if score > 0:
+            records.append({
+                "預測轉勢日期": f_date.strftime("%Y-%m-%d"),
+                "星期": ["一", "二", "三", "四", "五", "六", "日"][f_date.weekday()],
+                "共振強度分": round(score, 1),
+                "時間周期依據": " ｜ ".join(set(reasons))
+            })
+    hit_df = pd.DataFrame(records).sort_values(["共振強度分", "預測轉勢日期"], ascending=[False, True]) if records else pd.DataFrame()
+    return {"top_turns": hit_df.to_dict("records") if not hit_df.empty else []}
+
 def analyze_wave_cycles(df):
     if df is None or len(df) < 60: return None
     dates = pd.DatetimeIndex(df.index)
-    highs = np.asarray(df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"], dtype=float)
-    lows = np.asarray(df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"], dtype=float)
-    n = len(df)
-    today = datetime.now()
-    
-    pivots = []
+    highs, lows = np.asarray(extract_col(df, "high"), dtype=float), np.asarray(extract_col(df, "low"), dtype=float)
+    pivots, n, today = [], len(df), datetime.now()
     for i in range(5, n - 5):
         w_hi, w_lo = highs[i-5:i+6], lows[i-5:i+6]
         if len(w_hi) > 0 and highs[i] == np.nanmax(w_hi): pivots.append({"idx": i, "date": dates[i], "type": "頂部", "price": highs[i]})
@@ -216,34 +259,26 @@ def analyze_wave_cycles(df):
         p1, p2 = clean_pivots[i-1], clean_pivots[i]
         days_diff = (p2["date"] - p1["date"]).days
         if p1["type"] == "頂部" and p2["type"] == "底部":
-            down_days.append(days_diff)
-            down_pcts.append((p1["price"] - p2["price"]) / p1["price"] * 100)
+            down_days.append(days_diff); down_pcts.append((p1["price"] - p2["price"]) / p1["price"] * 100)
         elif p1["type"] == "底部" and p2["type"] == "頂部":
-            up_days.append(days_diff)
-            up_pcts.append((p2["price"] - p1["price"]) / p1["price"] * 100)
+            up_days.append(days_diff); up_pcts.append((p2["price"] - p1["price"]) / p1["price"] * 100)
             
-    avg_down_days = int(np.mean(down_days)) if down_days else 20
-    avg_down_pct = np.mean(down_pcts) if down_pcts else 10.0
-    avg_up_days = int(np.mean(up_days)) if up_days else 25
-    avg_up_pct = np.mean(up_pcts) if up_pcts else 15.0
+    avg_down_days, avg_down_pct = int(np.mean(down_days)) if down_days else 20, np.mean(down_pcts) if down_pcts else 10.0
+    avg_up_days, avg_up_pct = int(np.mean(up_days)) if up_days else 25, np.mean(up_pcts) if up_pcts else 15.0
     
-    last_pivot = clean_pivots[-1]
-    prev_pivot = clean_pivots[-2]
-    current_trend = "回調中(跌浪)" if last_pivot["type"] == "頂部" else "上升中(升浪)"
+    last_p, prev_p = clean_pivots[-1], clean_pivots[-2]
+    current_trend = "回調中(跌浪)" if last_p["type"] == "頂部" else "上升中(升浪)"
     is_extended = False
-    desc = ""
     
-    # 動態時間窗與黃金分割推演
     if current_trend == "回調中(跌浪)":
-        target_date = last_pivot["date"] + timedelta(days=avg_down_days)
-        fib_0618 = last_pivot["price"] - (last_pivot["price"] - prev_pivot["price"]) * 0.618
-        avg_target_price = last_pivot["price"] * (1 - avg_down_pct / 100)
-        
+        target_date = last_p["date"] + timedelta(days=avg_down_days)
+        fib_0618 = last_p["price"] - (last_p["price"] - prev_p["price"]) * 0.618
+        avg_target_price = last_p["price"] * (1 - avg_down_pct / 100)
         if target_date < today:
             is_extended = True
             ext_days = int(avg_down_days * 1.618)
-            target_date_ext = last_pivot["date"] + timedelta(days=ext_days)
-            if target_date_ext < today: target_date_ext = today + timedelta(days=3) # 防極端值
+            target_date_ext = last_p["date"] + timedelta(days=ext_days)
+            if target_date_ext < today: target_date_ext = today + timedelta(days=3)
             desc = (f"⚠️ **延長跌浪警告**：原定尋底窗 ({target_date.strftime('%Y-%m-%d')}) 已過失效。<br>"
                     f"市場進入 **1.618 斐波那契時間擴展**，下一個極限轉勢窗為 <b style='color:#d29922;'>{target_date_ext.strftime('%Y-%m-%d')}</b>。<br>"
                     f"🎯 **極限支持區**：平均跌幅位 **{avg_target_price:.2f}** ｜ 黃金分割 0.618 **{fib_0618:.2f}**")
@@ -251,14 +286,12 @@ def analyze_wave_cycles(df):
             desc = (f"🔍 **正常波浪推演**：預計尋底目標日期 <b style='color:#3fb950;'>{target_date.strftime('%Y-%m-%d')}</b>。<br>"
                     f"🎯 **預期支持區**：平均跌幅位 **{avg_target_price:.2f}** ｜ 黃金分割 0.618 **{fib_0618:.2f}**")
     else:
-        target_date = last_pivot["date"] + timedelta(days=avg_up_days)
-        fib_1618 = last_pivot["price"] + (last_pivot["price"] - prev_pivot["price"]) * 1.618
-        avg_target_price = last_pivot["price"] * (1 + avg_up_pct / 100)
-        
+        target_date = last_p["date"] + timedelta(days=avg_up_days)
+        fib_1618 = last_p["price"] + (last_p["price"] - prev_p["price"]) * 1.618
+        avg_target_price = last_p["price"] * (1 + avg_up_pct / 100)
         if target_date < today:
-            is_extended = True
-            ext_days = int(avg_up_days * 1.618)
-            target_date_ext = last_pivot["date"] + timedelta(days=ext_days)
+            is_extended, ext_days = True, int(avg_up_days * 1.618)
+            target_date_ext = last_p["date"] + timedelta(days=ext_days)
             if target_date_ext < today: target_date_ext = today + timedelta(days=3)
             desc = (f"🔥 **延伸升浪警告**：原定見頂窗 ({target_date.strftime('%Y-%m-%d')}) 已過，進入 **1.618 時間擴展**。<br>"
                     f"下一個極限見頂窗為 <b style='color:#f85149;'>{target_date_ext.strftime('%Y-%m-%d')}</b>。<br>"
@@ -270,79 +303,8 @@ def analyze_wave_cycles(df):
     return {
         "avg_down_days": avg_down_days, "avg_down_pct": round(avg_down_pct, 1),
         "avg_up_days": avg_up_days, "avg_up_pct": round(avg_up_pct, 1),
-        "current_trend": current_trend, "is_extended": is_extended,
-        "prediction_desc": desc
+        "current_trend": current_trend, "is_extended": is_extended, "prediction_desc": desc
     }
-
-def predict_gann_turn_dates(df, forward_trading_days=45):
-    if df is None or len(df) < 60: return {"top_turns": []}
-    dates = pd.DatetimeIndex(df.index)
-    highs = np.asarray(df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"], dtype=float)
-    lows = np.asarray(df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"], dtype=float)
-    n = len(df)
-    
-    pivots = []
-    offset = n - 180 if n > 180 else 0
-    for i in range(7, (180 if n > 180 else n) - 7):
-        g_idx = offset + i
-        w_hi, w_lo = highs[g_idx - 7 : g_idx + 8], lows[g_idx - 7 : g_idx + 8]
-        if len(w_hi) > 0 and not np.all(np.isnan(w_hi)) and highs[g_idx] == np.nanmax(w_hi): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段頂部", "price": highs[g_idx]})
-        if len(w_lo) > 0 and not np.all(np.isnan(w_lo)) and lows[g_idx] == np.nanmin(w_lo): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段底部", "price": lows[g_idx]})
-            
-    pivots = sorted({p["idx"]: p for p in pivots}.values(), key=lambda x: x["idx"])
-    future_bdays = pd.bdate_range(start=dates[-1] + timedelta(days=1), periods=forward_trading_days)
-    
-    trading_cycles = {15: 1.5, 21: 2.0, 30: 2.5, 45: 3.5, 60: 3.0, 90: 4.5, 120: 3.5}
-    gann_seasonal_dates = [(3, 21, "春分(0°)"), (6, 21, "夏至(90°)"), (9, 22, "秋分(180°)"), (12, 21, "冬至(270°)"), (2, 4, "立春"), (5, 5, "立夏"), (8, 7, "立秋"), (11, 7, "立冬")]
-    
-    records = []
-    for step, f_date in enumerate(future_bdays, start=1):
-        future_idx = (n - 1) + step
-        score, reasons = 0.0, []
-        
-        for pv in pivots[-4:]:
-            el_td = future_idx - pv["idx"]
-            if el_td in trading_cycles:
-                score += trading_cycles[el_td]
-                reasons.append(f"基於 {pv['date'].strftime('%Y-%m-%d')} {pv['type']}({pv['price']:.1f}) 疊加 {el_td} 交易日江恩週期")
-            
-            el_cd = (f_date - pv["date"]).days
-            if any(abs(el_cd - cc) <= 1 for cc in [30, 45, 60, 90]):
-                score += 1.5
-                reasons.append(f"基於 {pv['date'].strftime('%Y-%m-%d')} {pv['type']} 疊加自然日循環")
-                
-        for m, d, name in gann_seasonal_dates:
-            if abs((f_date - pd.Timestamp(year=f_date.year, month=m, day=d)).days) <= 1:
-                score += 3.5
-                reasons.append(f"觸發江恩四方形關鍵節氣：{name}")
-                
-        if score > 0:
-            records.append({
-                "預測轉勢日期": f_date.strftime("%Y-%m-%d"),
-                "星期": ["一", "二", "三", "四", "五", "六", "日"][f_date.weekday()],
-                "共振強度分": round(score, 1),
-                "時間周期依據": " ｜ ".join(set(reasons))
-            })
-            
-    hit_df = pd.DataFrame(records).sort_values(["共振強度分", "預測轉勢日期"], ascending=[False, True]) if records else pd.DataFrame()
-    return {"top_turns": hit_df.to_dict("records") if not hit_df.empty else []}
-
-def calc_tspr_system(df, left_bars=10):
-    if df is None or len(df) < 30: return {"active_support": np.nan, "is_broken": False, "status": "資料不足"}
-    lows = np.asarray(df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"], dtype=float)
-    closes = np.asarray(df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"], dtype=float)
-    active_support, is_broken = None, False
-    
-    for i in range(left_bars + 5, len(df)):
-        pivot_idx = i - 5
-        window = lows[max(0, pivot_idx - left_bars) : i + 1]
-        if len(window) > 0 and not np.all(np.isnan(window)):
-            if not np.isnan(lows[pivot_idx]) and lows[pivot_idx] == np.nanmin(window):
-                active_support, is_broken = float(lows[pivot_idx]), False
-        if active_support is not None and closes[i] < active_support: is_broken = True
-            
-    status_str = "🔴 跌穿10日支持" if is_broken else ("🟢 守穩10日支持" if active_support else "⚪ 尋底中")
-    return {"active_support": round(active_support, 3) if active_support else np.nan, "is_broken": is_broken, "status": status_str}
 
 def generate_drawdown_ladder_html(high52, current_price):
     if np.isnan(high52) or high52 <= 0: return ""
@@ -367,7 +329,6 @@ def generate_drawdown_ladder_text(high52, current_price):
     drawdown_pct = (current_price / high52 - 1) * 100
     next_milestone_pct = math.floor(drawdown_pct / 10) * 10
     if next_milestone_pct > -10: next_milestone_pct = -10
-    
     parts = []
     for pct in range(10, 100, 10):
         price_at_pct = high52 * (1 - pct/100)
@@ -375,10 +336,10 @@ def generate_drawdown_ladder_text(high52, current_price):
         else: parts.append(f"▼{pct}%({price_at_pct:.1f})")
     return " | ".join(parts)
 
-# ==================== 決策與見底概率引擎 (100%保留) ====================
+# ==================== 決策與見底概率引擎 (結合流動性防護) ====================
 def decision_engine(ticker, df, info):
     if df is None or len(df) < 130: return None
-    close = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
+    close = extract_col(df, "close")
     price = safe_float(close.iloc[-1])
     high52 = get_52w_high(df)
     
@@ -395,7 +356,7 @@ def decision_engine(ticker, df, info):
     nt = turn_info["top_turns"][0] if turn_info["top_turns"] else None
     next_turn_str = f"{nt['預測轉勢日期']} ({nt['共振強度分']}分)" if nt else "—"
 
-    # 💡 股票見底百分比評分系統
+    # 💡 股票見底百分比評分系統 (加入防飛刀機制)
     bottom_prob = 0
     if drawdown <= -40: bottom_prob += 35
     elif drawdown <= -25: bottom_prob += 20
@@ -414,7 +375,10 @@ def decision_engine(ticker, df, info):
         dist_to_supp = (price / tspr["active_support"] - 1) * 100
         if 0 <= dist_to_supp <= 5: bottom_prob += 15 
         
-    bottom_prob = min(99, bottom_prob) 
+    # 防飛刀機制：大跌且資金極度流出，強制扣分
+    if drawdown <= -40 and cmf < -0.15: bottom_prob -= 30 
+        
+    bottom_prob = max(0, min(99, bottom_prob)) 
     
     pe = safe_float(info.get("pe"))
     pe_str = f"{pe:.1f}" if pe > 0 else "N/A"
@@ -438,7 +402,7 @@ def decision_engine(ticker, df, info):
         "ladder_text": generate_drawdown_ladder_text(high52, price)
     }
 
-# ==================== Streamlit UI ====================
+# ==================== Streamlit UI 主結構 ====================
 if time.time() - st.session_state.last_refresh >= AUTO_REFRESH_SEC:
     st.session_state.last_refresh = time.time(); st.cache_data.clear(); clear_errors(); st.rerun()
 
@@ -449,20 +413,20 @@ with st.sidebar:
     else: st.info("ℹ️ 使用 Yahoo 備援報價")
     if st.button("🔄 立即刷新快取"): st.cache_data.clear(); st.rerun()
 
-st.markdown("# 🎯 終極撈底系統 V7.5")
-st.caption(f"波浪推演 + 深度江恩 + 見底機率引擎｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
+st.markdown("# 🎯 終極撈底系統 V8.0")
+st.caption(f"波浪擴展預測 + 深度防護引擎｜時空交匯圖表整合｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
 
 tabs = st.tabs([
     "🌍 大市深度分析 (三大指數推演)", 
-    "📊 關注名單總排行 (置頂+回調階梯)", 
+    "📊 關注名單總排行 (置頂+階梯)", 
     "🎯 撈底黃金雷達 (Screener)", 
-    "📈 深度技術圖表 (Charts)"
+    "📈 深度技術圖表 (時空視覺化)"
 ])
 
-# ==================== Tab 1: 大市深度分析 (三重拆解) ====================
+# ==================== Tab 1: 大市深度分析 ====================
 with tabs[0]:
     st.subheader("🌍 宏觀指數深度拆解 (恒指 / 標普 / 納指)")
-    st.caption("每個指數獨立進行：動能溫度計判斷、江恩轉勢日深度推算，以及歷史波浪動態擴展推演。")
+    st.caption("每個指數獨立進行：動能溫度計判斷、江恩轉勢日深度推算，以及歷史波浪動態擴展推演。自動判斷是否進入延長浪。")
     
     idx_map = {"恒生指數 (HSI)": "^HSI", "標普500 (SPX)": "^GSPC", "納斯達克 (NDX)": "^NDX"}
     cols = st.columns(3)
@@ -472,8 +436,7 @@ with tabs[0]:
             st.markdown(f"### {idx_name}")
             df_idx = fetch_ohlcv(idx_tk, period="1y")
             if df_idx is not None:
-                # 溫度計
-                close = df_idx["close"].iloc[:, 0] if isinstance(df_idx["close"], pd.DataFrame) else df_idx["close"]
+                close = extract_col(df_idx, "close")
                 ma200 = close.rolling(200).mean().iloc[-1]
                 rsi_val = calc_rsi(close).iloc[-1]
                 if close.iloc[-1] < ma200 and rsi_val < 35: state = "🥶 冰點 (極度恐慌)"
@@ -483,14 +446,12 @@ with tabs[0]:
                 
                 st.info(f"**大市狀態：** {state}")
                 
-                # 江恩轉勢 (深度理據化)
                 turn_res = predict_gann_turn_dates(df_idx, 30)
                 if turn_res.get("top_turns"):
                     t = turn_res["top_turns"][0]
                     st.markdown(f"**🔥 下個高機率變盤日：** {t['預測轉勢日期']}")
                     st.markdown("<ul style='font-size:13px; color:#8b949e;'>" + "".join([f"<li>{r}</li>" for r in t['時間周期依據'].split(' ｜ ')]) + "</ul>", unsafe_allow_html=True)
                 
-                # 波浪推演 (動態擴展)
                 wave_res = analyze_wave_cycles(df_idx)
                 if wave_res:
                     box_class = "wave-box extended-wave" if wave_res["is_extended"] else "wave-box"
@@ -506,10 +467,10 @@ with tabs[0]:
             else:
                 st.error("無法取得指數數據。")
 
-# ==================== Tab 2: 關注名單總排行 (置頂+回調階梯優先) ====================
+# ==================== Tab 2: 關注名單總排行 ====================
 with tabs[1]:
     st.subheader("📊 關注名單：技術評分總排行")
-    st.caption("以『見底概率%』為核心。專屬名單永久置頂，全景回調階梯優先顯示。")
+    st.caption("以『見底概率%』為核心（內建防飛刀機制）。專屬名單永久置頂，全景回調階梯優先顯示。")
     
     tickers = US_WATCHLIST if market == "🇺🇸 核心與美股" else HK_WATCHLIST
     active_pinned = US_PINNED if market == "🇺🇸 核心與美股" else HK_PINNED
@@ -532,12 +493,9 @@ with tabs[1]:
         if results:
             df_results = pd.DataFrame(results)
             df_results["置頂"] = df_results["ticker"].apply(lambda x: "📌" if x in active_pinned else "")
-            
-            # 💡 排序：置頂優先，然後按【見底概率%】由高至低
             df_results = df_results.sort_values(["置頂", "bottom_prob"], ascending=[False, False])
             st.session_state["latest_results"] = df_results
             
-            # 💡 調整顯示順序，把梯隊字串移到前面
             display_df = df_results[[
                 "置頂", "ticker", "name", "bottom_prob", "ladder_text", 
                 "pe", "flow_detail", "tspr_status", "next_turn_date", "drawdown", "stop_loss"
@@ -552,7 +510,6 @@ with tabs[1]:
             
             st.markdown("### 📌 置頂專屬名單：深度回調階梯與見底分析")
             pinned_results = df_results[df_results["置頂"] == "📌"]
-            
             for _, row in pinned_results.iterrows():
                 prob_color = "#3fb950" if row['bottom_prob'] >= 60 else ("#d29922" if row['bottom_prob'] >= 30 else "#f85149")
                 st.markdown(
@@ -568,13 +525,11 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("🎯 撈底黃金雷達")
     st.caption("自動過濾出全市場：見底概率 >= 45% 的超跌優質股，適合進行右側交易。")
-    
     if "latest_results" not in st.session_state:
         st.info("請先在『Tab 2: 關注名單』點擊載入，雷達掃描名單會自動為你過濾生成。")
     else:
         df_results = st.session_state["latest_results"]
         bottom_fish_df = df_results[df_results["bottom_prob"] >= 45].copy()
-        
         if bottom_fish_df.empty:
             st.warning("目前沒有符合【高見底概率】的股票。切勿夾硬買入。")
         else:
@@ -589,9 +544,10 @@ with tabs[2]:
                     f"</div>", unsafe_allow_html=True
                 )
 
-# ==================== Tab 4: 深度技術圖表 ====================
+# ==================== Tab 4: 深度技術圖表 (時空視覺化升級) ====================
 with tabs[3]:
-    st.subheader("📈 深度技術圖表｜右側確認專用")
+    st.subheader("📈 深度技術圖表｜時空交匯視覺化")
+    st.caption("💡 **升級亮點**：圖表會自動畫出 **TSPR 支持線** (綠虛線)，並以 **垂直紅虛線** 標示未來預測的江恩轉勢日。讓你看清「價格支持」與「時間窗口」是否完美交匯。")
     
     col_q1, col_q2 = st.columns([1, 4])
     with col_q1: default_tk = st.selectbox("快捷選擇", ["0700.HK", "9988.HK", "NVDA", "NFLX"])
@@ -600,24 +556,42 @@ with tabs[3]:
     if ticker:
         chart_df = fetch_ohlcv(ticker, period="1y")
         if chart_df is not None and len(chart_df) > 30:
-            close = chart_df["close"].iloc[:, 0] if isinstance(chart_df["close"], pd.DataFrame) else chart_df["close"]
+            close = extract_col(chart_df, "close")
             tspr_res = calc_tspr_system(chart_df)
+            turn_res = predict_gann_turn_dates(chart_df, 45) # 預測未來45天轉勢日
             
             fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03)
             
-            fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df["open"], high=chart_df["high"], low=chart_df["low"], close=close, name="K線"), row=1, col=1)
+            # K線圖
+            fig.add_trace(go.Candlestick(x=chart_df.index, open=extract_col(chart_df, "open"), high=extract_col(chart_df, "high"), low=extract_col(chart_df, "low"), close=close, name="K線"), row=1, col=1)
+            
+            # 💡 視覺化 1: 畫出 TSPR 支持線
             if not pd.isna(tspr_res["active_support"]):
-                fig.add_hline(y=tspr_res["active_support"], line_dash="dash", line_color="#3fb950" if not tspr_res["is_broken"] else "#ef5350", annotation_text="TSPR 10日支持", row=1, col=1)
+                line_col = "#3fb950" if not tspr_res["is_broken"] else "#ef5350"
+                fig.add_hline(y=tspr_res["active_support"], line_dash="dash", line_color=line_col, annotation_text=f"TSPR 支持 ({tspr_res['active_support']})", row=1, col=1)
 
-            vol = chart_df["volume"].iloc[:, 0] if isinstance(chart_df["volume"], pd.DataFrame) else chart_df["volume"]
-            op = chart_df["open"].iloc[:, 0] if isinstance(chart_df["open"], pd.DataFrame) else chart_df["open"]
+            # 💡 視覺化 2: 畫出未來的江恩轉勢日 (垂直線)
+            if turn_res.get("top_turns"):
+                # 只取最強的 2 個未來日期畫線
+                for t in turn_res["top_turns"][:2]:
+                    target_dt = pd.to_datetime(t["預測轉勢日期"])
+                    fig.add_vline(x=target_dt, line_dash="dot", line_color="#d29922", annotation_text=f"轉勢窗", annotation_position="top right", row=1, col=1)
+
+            # 成交量
+            vol = extract_col(chart_df, "volume")
+            op = extract_col(chart_df, "open")
             vol_colors = ["#3fb950" if c>=o else "#f85149" for c, o in zip(close, op)]
             fig.add_trace(go.Bar(x=chart_df.index, y=vol, marker_color=vol_colors, name="成交量"), row=2, col=1)
             
+            # MACD
             macd, sig, hist = calc_macd(close)
             fig.add_trace(go.Bar(x=chart_df.index, y=hist, marker_color=[C_GREEN if x>=0 else C_RED for x in hist.fillna(0)], name="MACD Hist"), row=3, col=1)
             fig.add_trace(go.Scatter(x=chart_df.index, y=macd, line=dict(color=C_BLUE), name="MACD"), row=3, col=1)
             fig.add_trace(go.Scatter(x=chart_df.index, y=sig, line=dict(color=C_ORANGE), name="Signal"), row=3, col=1)
             
-            fig.update_layout(height=800, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
+            # 設定 X 軸範圍 (向未來延伸以顯示轉勢日)
+            last_date = chart_df.index[-1]
+            future_date = last_date + timedelta(days=20)
+            fig.update_layout(xaxis=dict(range=[chart_df.index[0], future_date]), height=800, paper_bgcolor=C_BG, plot_bgcolor=C_BG, font=dict(color="#e6edf3"), xaxis_rangeslider_visible=False)
+            
             st.plotly_chart(fig, use_container_width=True)
