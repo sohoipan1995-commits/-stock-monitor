@@ -23,7 +23,7 @@ try:
 except ImportError:
     FUTU_AVAILABLE = False
 
-st.set_page_config(page_title="📈 終極撈底系統 V7.0 (波浪推演 + 見底機率)", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="📈 終極撈底系統 V7.5 (智能波浪擴展 + 深度宏觀)", page_icon="🎯", layout="wide")
 
 C_RED = "#f85149"
 C_GREEN = "#3fb950"
@@ -39,7 +39,7 @@ INFO_TTL = 3600
 MAX_WORKERS_DATA = 5
 FUTU_LOCK = threading.RLock()
 
-# 💡 你的專屬永久置頂名單 (未經同意不刪減)
+# 💡 你的專屬永久置頂名單 (絕對保留)
 HK_PINNED = ["9988.HK", "0700.HK", "0124.HK", "3690.HK", "1810.HK", "0388.HK"]
 US_PINNED = ["NFLX", "NVDA", "GOOGL", "MSFT", "META", "MU", "TSM", "SPCX", "AVGO", 
              "TSLA", "AAPL", "AMD", "AMZN", "ORCL", "PLTR", "UNH", "PDD"]
@@ -71,7 +71,8 @@ h1,h2,h3,h4,h5,h6,p,label,.stMarkdown {color:#e6edf3!important;}
 .warn-card {background:#2b1a1a;border:1px solid #f85149;border-radius:10px;padding:12px;margin:8px 0;}
 .good-card {background:#102419;border:1px solid #3fb950;border-radius:10px;padding:16px;margin:12px 0;}
 .ladder-box {background:#21262d; border:1px solid #30363d; border-radius:6px; padding:12px; margin-top:10px; font-family: monospace; font-size: 14px; line-height: 1.8;}
-.wave-box {background:#1a202c; border:1px dashed #bc8cff; border-radius:6px; padding:12px; margin-top:8px;}
+.wave-box {background:#1a202c; border:1px solid #4a148c; border-radius:8px; padding:16px; margin-top:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);}
+.extended-wave {border-color: #d29922; background: #2b2210;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -79,10 +80,8 @@ if "last_refresh" not in st.session_state: st.session_state.last_refresh = time.
 if "error_log" not in st.session_state: st.session_state.error_log = []
 
 def safe_float(value, default=np.nan):
-    try:
-        return default if value is None or pd.isna(value) else float(value)
-    except Exception:
-        return default
+    try: return default if value is None or pd.isna(value) else float(value)
+    except Exception: return default
 
 def clear_errors(): st.session_state.error_log = []
 
@@ -99,8 +98,7 @@ def init_futu():
             ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
             ret, _ = ctx.get_market_snapshot(["HK.00700"])
         return ctx if ret == RET_OK else None
-    except Exception:
-        return None
+    except Exception: return None
 
 quote_ctx = init_futu()
 
@@ -133,8 +131,7 @@ def fetch_multiple(tickers, period="1y"):
     results = {}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS_DATA) as executor:
         futures = {executor.submit(fetch_ohlcv, tk, period): tk for tk in tickers}
-        for future in as_completed(futures):
-            results[futures[future]] = future.result()
+        for future in as_completed(futures): results[futures[future]] = future.result()
     return results
 
 @st.cache_data(ttl=INFO_TTL)
@@ -149,7 +146,7 @@ def get_full_stock_info(ticker):
     except Exception: pass
     return result
 
-# ==================== 技術與波浪推演引擎 ====================
+# ==================== 技術與波浪推演引擎 (V7.5 深度升級版) ====================
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
@@ -187,22 +184,21 @@ def get_52w_high(df):
     window = highs[-252:] if len(highs) >= 252 else highs
     return float(np.nanmax(window)) if len(window) > 0 and not np.all(np.isnan(window)) else np.nan
 
-# 💡 新增：波浪回調日數與幅度推演引擎
+# 💡 V7.5 智能波浪推演引擎 (解決過期日期 BUG，加入擴展浪與黃金分割)
 def analyze_wave_cycles(df):
     if df is None or len(df) < 60: return None
     dates = pd.DatetimeIndex(df.index)
     highs = np.asarray(df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"], dtype=float)
     lows = np.asarray(df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"], dtype=float)
     n = len(df)
+    today = datetime.now()
     
-    # 抓取 Pivot
     pivots = []
     for i in range(5, n - 5):
         w_hi, w_lo = highs[i-5:i+6], lows[i-5:i+6]
         if len(w_hi) > 0 and highs[i] == np.nanmax(w_hi): pivots.append({"idx": i, "date": dates[i], "type": "頂部", "price": highs[i]})
         if len(w_lo) > 0 and lows[i] == np.nanmin(w_lo): pivots.append({"idx": i, "date": dates[i], "type": "底部", "price": lows[i]})
     
-    # 清理連續相同類型的 Pivot (只留極值)
     clean_pivots = []
     for p in pivots:
         if not clean_pivots: clean_pivots.append(p)
@@ -211,10 +207,9 @@ def analyze_wave_cycles(df):
             if last_p["type"] == p["type"]:
                 if p["type"] == "頂部" and p["price"] > last_p["price"]: clean_pivots[-1] = p
                 elif p["type"] == "底部" and p["price"] < last_p["price"]: clean_pivots[-1] = p
-            else:
-                clean_pivots.append(p)
+            else: clean_pivots.append(p)
                 
-    if len(clean_pivots) < 2: return None
+    if len(clean_pivots) < 3: return None
     
     down_days, down_pcts, up_days, up_pcts = [], [], [], []
     for i in range(1, len(clean_pivots)):
@@ -233,26 +228,52 @@ def analyze_wave_cycles(df):
     avg_up_pct = np.mean(up_pcts) if up_pcts else 15.0
     
     last_pivot = clean_pivots[-1]
-    last_price = safe_float((df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]).iloc[-1])
+    prev_pivot = clean_pivots[-2]
     current_trend = "回調中(跌浪)" if last_pivot["type"] == "頂部" else "上升中(升浪)"
+    is_extended = False
+    desc = ""
     
+    # 動態時間窗與黃金分割推演
     if current_trend == "回調中(跌浪)":
         target_date = last_pivot["date"] + timedelta(days=avg_down_days)
-        target_price = last_pivot["price"] * (1 - avg_down_pct / 100)
-        desc = f"預計尋底目標日期：**{target_date.strftime('%Y-%m-%d')}**，預計底部支持價：**{target_price:.2f}**"
+        fib_0618 = last_pivot["price"] - (last_pivot["price"] - prev_pivot["price"]) * 0.618
+        avg_target_price = last_pivot["price"] * (1 - avg_down_pct / 100)
+        
+        if target_date < today:
+            is_extended = True
+            ext_days = int(avg_down_days * 1.618)
+            target_date_ext = last_pivot["date"] + timedelta(days=ext_days)
+            if target_date_ext < today: target_date_ext = today + timedelta(days=3) # 防極端值
+            desc = (f"⚠️ **延長跌浪警告**：原定尋底窗 ({target_date.strftime('%Y-%m-%d')}) 已過失效。<br>"
+                    f"市場進入 **1.618 斐波那契時間擴展**，下一個極限轉勢窗為 <b style='color:#d29922;'>{target_date_ext.strftime('%Y-%m-%d')}</b>。<br>"
+                    f"🎯 **極限支持區**：平均跌幅位 **{avg_target_price:.2f}** ｜ 黃金分割 0.618 **{fib_0618:.2f}**")
+        else:
+            desc = (f"🔍 **正常波浪推演**：預計尋底目標日期 <b style='color:#3fb950;'>{target_date.strftime('%Y-%m-%d')}</b>。<br>"
+                    f"🎯 **預期支持區**：平均跌幅位 **{avg_target_price:.2f}** ｜ 黃金分割 0.618 **{fib_0618:.2f}**")
     else:
         target_date = last_pivot["date"] + timedelta(days=avg_up_days)
-        target_price = last_pivot["price"] * (1 + avg_up_pct / 100)
-        desc = f"預計見頂目標日期：**{target_date.strftime('%Y-%m-%d')}**，預計頂部阻力價：**{target_price:.2f}**"
+        fib_1618 = last_pivot["price"] + (last_pivot["price"] - prev_pivot["price"]) * 1.618
+        avg_target_price = last_pivot["price"] * (1 + avg_up_pct / 100)
         
+        if target_date < today:
+            is_extended = True
+            ext_days = int(avg_up_days * 1.618)
+            target_date_ext = last_pivot["date"] + timedelta(days=ext_days)
+            if target_date_ext < today: target_date_ext = today + timedelta(days=3)
+            desc = (f"🔥 **延伸升浪警告**：原定見頂窗 ({target_date.strftime('%Y-%m-%d')}) 已過，進入 **1.618 時間擴展**。<br>"
+                    f"下一個極限見頂窗為 <b style='color:#f85149;'>{target_date_ext.strftime('%Y-%m-%d')}</b>。<br>"
+                    f"🎯 **極限阻力區**：平均升幅位 **{avg_target_price:.2f}** ｜ 黃金擴展 1.618 **{fib_1618:.2f}**")
+        else:
+            desc = (f"🔍 **正常波浪推演**：預計見頂目標日期 <b style='color:#f85149;'>{target_date.strftime('%Y-%m-%d')}</b>。<br>"
+                    f"🎯 **預期阻力區**：平均升幅位 **{avg_target_price:.2f}** ｜ 黃金擴展 1.618 **{fib_1618:.2f}**")
+            
     return {
         "avg_down_days": avg_down_days, "avg_down_pct": round(avg_down_pct, 1),
         "avg_up_days": avg_up_days, "avg_up_pct": round(avg_up_pct, 1),
-        "current_trend": current_trend, "last_pivot": last_pivot,
+        "current_trend": current_trend, "is_extended": is_extended,
         "prediction_desc": desc
     }
 
-# 💡 升級版：深度理據化江恩預測 (明確列出基準點)
 def predict_gann_turn_dates(df, forward_trading_days=45):
     if df is None or len(df) < 60: return {"top_turns": []}
     dates = pd.DatetimeIndex(df.index)
@@ -265,8 +286,8 @@ def predict_gann_turn_dates(df, forward_trading_days=45):
     for i in range(7, (180 if n > 180 else n) - 7):
         g_idx = offset + i
         w_hi, w_lo = highs[g_idx - 7 : g_idx + 8], lows[g_idx - 7 : g_idx + 8]
-        if len(w_hi) > 0 and highs[g_idx] == np.nanmax(w_hi): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段頂部", "price": highs[g_idx]})
-        if len(w_lo) > 0 and lows[g_idx] == np.nanmin(w_lo): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段底部", "price": lows[g_idx]})
+        if len(w_hi) > 0 and not np.all(np.isnan(w_hi)) and highs[g_idx] == np.nanmax(w_hi): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段頂部", "price": highs[g_idx]})
+        if len(w_lo) > 0 and not np.all(np.isnan(w_lo)) and lows[g_idx] == np.nanmin(w_lo): pivots.append({"idx": g_idx, "date": dates[g_idx], "type": "波段底部", "price": lows[g_idx]})
             
     pivots = sorted({p["idx"]: p for p in pivots}.values(), key=lambda x: x["idx"])
     future_bdays = pd.bdate_range(start=dates[-1] + timedelta(days=1), periods=forward_trading_days)
@@ -279,7 +300,6 @@ def predict_gann_turn_dates(df, forward_trading_days=45):
         future_idx = (n - 1) + step
         score, reasons = 0.0, []
         
-        # 理據化 1: 依據歷史高低點
         for pv in pivots[-4:]:
             el_td = future_idx - pv["idx"]
             if el_td in trading_cycles:
@@ -291,7 +311,6 @@ def predict_gann_turn_dates(df, forward_trading_days=45):
                 score += 1.5
                 reasons.append(f"基於 {pv['date'].strftime('%Y-%m-%d')} {pv['type']} 疊加自然日循環")
                 
-        # 理據化 2: 自然節氣
         for m, d, name in gann_seasonal_dates:
             if abs((f_date - pd.Timestamp(year=f_date.year, month=m, day=d)).days) <= 1:
                 score += 3.5
@@ -356,10 +375,9 @@ def generate_drawdown_ladder_text(high52, current_price):
         else: parts.append(f"▼{pct}%({price_at_pct:.1f})")
     return " | ".join(parts)
 
-# ==================== 決策與見底概率引擎 ====================
+# ==================== 決策與見底概率引擎 (100%保留) ====================
 def decision_engine(ticker, df, info):
     if df is None or len(df) < 130: return None
-    
     close = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
     price = safe_float(close.iloc[-1])
     high52 = get_52w_high(df)
@@ -367,7 +385,6 @@ def decision_engine(ticker, df, info):
     rsi = safe_float(calc_rsi(close).iloc[-1], 50)
     macd, macd_signal, _ = calc_macd(close)
     obv_s, obv_ma = calc_obv(df)
-    mfi = safe_float(calc_mfi(df).iloc[-1], 50)
     cmf = safe_float(calc_cmf(df).iloc[-1], 0)
     
     obv_status = "流入" if safe_float(obv_s.iloc[-1]) > safe_float(obv_ma.iloc[-1]) else "流出"
@@ -378,7 +395,7 @@ def decision_engine(ticker, df, info):
     nt = turn_info["top_turns"][0] if turn_info["top_turns"] else None
     next_turn_str = f"{nt['預測轉勢日期']} ({nt['共振強度分']}分)" if nt else "—"
 
-    # 💡 5. 新增：股票見底百分比評分系統 (Bottom Probability %)
+    # 💡 股票見底百分比評分系統
     bottom_prob = 0
     if drawdown <= -40: bottom_prob += 35
     elif drawdown <= -25: bottom_prob += 20
@@ -395,11 +412,10 @@ def decision_engine(ticker, df, info):
     
     if not tspr["is_broken"] and not pd.isna(tspr["active_support"]):
         dist_to_supp = (price / tspr["active_support"] - 1) * 100
-        if 0 <= dist_to_supp <= 5: bottom_prob += 15 # 接近支持位
+        if 0 <= dist_to_supp <= 5: bottom_prob += 15 
         
-    bottom_prob = min(99, bottom_prob) # 封頂 99%
+    bottom_prob = min(99, bottom_prob) 
     
-    # 其他細節標籤
     pe = safe_float(info.get("pe"))
     pe_str = f"{pe:.1f}" if pe > 0 else "N/A"
     
@@ -433,20 +449,20 @@ with st.sidebar:
     else: st.info("ℹ️ 使用 Yahoo 備援報價")
     if st.button("🔄 立即刷新快取"): st.cache_data.clear(); st.rerun()
 
-st.markdown("# 🎯 終極撈底系統 V7.0")
+st.markdown("# 🎯 終極撈底系統 V7.5")
 st.caption(f"波浪推演 + 深度江恩 + 見底機率引擎｜頁面生成：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} HKT")
 
 tabs = st.tabs([
-    "🌍 大市深度分析 (三指數並列)", 
-    "📊 關注名單總排行 (優先回調階梯)", 
+    "🌍 大市深度分析 (三大指數推演)", 
+    "📊 關注名單總排行 (置頂+回調階梯)", 
     "🎯 撈底黃金雷達 (Screener)", 
     "📈 深度技術圖表 (Charts)"
 ])
 
 # ==================== Tab 1: 大市深度分析 (三重拆解) ====================
 with tabs[0]:
-    st.subheader("🌍 大市深度分析 (恒指 / 標普 / 納指)")
-    st.caption("每個指數獨立進行：溫度計判斷、江恩轉勢日推算，以及歷史波浪回調日數/幅度推演。")
+    st.subheader("🌍 宏觀指數深度拆解 (恒指 / 標普 / 納指)")
+    st.caption("每個指數獨立進行：動能溫度計判斷、江恩轉勢日深度推算，以及歷史波浪動態擴展推演。")
     
     idx_map = {"恒生指數 (HSI)": "^HSI", "標普500 (SPX)": "^GSPC", "納斯達克 (NDX)": "^NDX"}
     cols = st.columns(3)
@@ -460,30 +476,30 @@ with tabs[0]:
                 close = df_idx["close"].iloc[:, 0] if isinstance(df_idx["close"], pd.DataFrame) else df_idx["close"]
                 ma200 = close.rolling(200).mean().iloc[-1]
                 rsi_val = calc_rsi(close).iloc[-1]
-                if close.iloc[-1] < ma200 and rsi_val < 35: state = "🥶 冰點 (恐慌撈底區)"
-                elif close.iloc[-1] < ma200: state = "🧊 冷卻 (反覆築底)"
-                elif rsi_val > 70: state = "🔥 過熱 (泡沫區)"
-                else: state = "☀️ 溫和 (穩健區)"
+                if close.iloc[-1] < ma200 and rsi_val < 35: state = "🥶 冰點 (極度恐慌)"
+                elif close.iloc[-1] < ma200: state = "🧊 冷卻 (弱勢反覆)"
+                elif rsi_val > 70: state = "🔥 過熱 (動能耗竭警戒)"
+                else: state = "☀️ 溫和 (健康趨勢)"
                 
                 st.info(f"**大市狀態：** {state}")
                 
-                # 江恩轉勢
+                # 江恩轉勢 (深度理據化)
                 turn_res = predict_gann_turn_dates(df_idx, 30)
                 if turn_res.get("top_turns"):
                     t = turn_res["top_turns"][0]
                     st.markdown(f"**🔥 下個高機率變盤日：** {t['預測轉勢日期']}")
-                    st.caption(f"理據：{t['時間周期依據']}")
+                    st.markdown("<ul style='font-size:13px; color:#8b949e;'>" + "".join([f"<li>{r}</li>" for r in t['時間周期依據'].split(' ｜ ')]) + "</ul>", unsafe_allow_html=True)
                 
-                # 波浪推演
+                # 波浪推演 (動態擴展)
                 wave_res = analyze_wave_cycles(df_idx)
                 if wave_res:
+                    box_class = "wave-box extended-wave" if wave_res["is_extended"] else "wave-box"
                     st.markdown(
-                        f"<div class='wave-box'>"
+                        f"<div class='{box_class}'>"
                         f"<b>🌊 歷史波浪均值統計：</b><br>"
                         f"平均跌浪：<b>{wave_res['avg_down_days']}日</b> (跌幅 <b>{wave_res['avg_down_pct']}%</b>)<br>"
                         f"平均升浪：<b>{wave_res['avg_up_days']}日</b> (升幅 <b>{wave_res['avg_up_pct']}%</b>)<br>"
                         f"<hr style='margin:8px 0; border-color:#30363d;'>"
-                        f"<b>🔮 AI 推演預測：</b><br>"
                         f"{wave_res['prediction_desc']}"
                         f"</div>", unsafe_allow_html=True
                     )
@@ -493,7 +509,7 @@ with tabs[0]:
 # ==================== Tab 2: 關注名單總排行 (置頂+回調階梯優先) ====================
 with tabs[1]:
     st.subheader("📊 關注名單：技術評分總排行")
-    st.caption("以『見底概率% (Bottom Probability)』為核心。專屬名單永久置頂，全景回調階梯優先顯示。")
+    st.caption("以『見底概率%』為核心。專屬名單永久置頂，全景回調階梯優先顯示。")
     
     tickers = US_WATCHLIST if market == "🇺🇸 核心與美股" else HK_WATCHLIST
     active_pinned = US_PINNED if market == "🇺🇸 核心與美股" else HK_PINNED
@@ -538,9 +554,7 @@ with tabs[1]:
             pinned_results = df_results[df_results["置頂"] == "📌"]
             
             for _, row in pinned_results.iterrows():
-                # 見底顏色判斷
                 prob_color = "#3fb950" if row['bottom_prob'] >= 60 else ("#d29922" if row['bottom_prob'] >= 30 else "#f85149")
-                
                 st.markdown(
                     f"<div class='decision-card'>"
                     f"⭐ <b style='font-size:18px; color:#58a6ff;'>{row['ticker']} {row['name']}</b> ｜ 見底概率: <b style='color:{prob_color}; font-size:16px;'>{row['bottom_prob']}%</b> ｜ 現時PE: <b>{row['pe']}</b><br>"
