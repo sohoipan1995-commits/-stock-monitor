@@ -140,9 +140,17 @@ def fetch_ohlcv(ticker, period="1y", interval="1d"):
     try:
         df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False, threads=False)
         if df is None or df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        df.columns = [str(c).lower() for c in df.columns]
-        return df.sort_index().dropna()
+        
+        # 處理 yfinance 多重索引
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = df.columns.get_level_values(0)
+            
+        df.columns = [str(c).lower().strip() for c in df.columns]
+        
+        # 【核心修復】去除重複的欄位名 (避免 df["low"] 變成二維 DataFrame 導致後續報錯)
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+        
+        return df.sort_index().dropna(subset=["open", "high", "low", "close", "volume"])
     except Exception as exc:
         add_error("Yahoo OHLCV 失敗", ticker, exc)
         return None
@@ -189,7 +197,8 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     return macd, sig, macd - sig
 
 def get_52w_high(df):
-    highs = np.asarray(df["high"], dtype=float)
+    high_col = df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"]
+    highs = np.asarray(high_col, dtype=float)
     if len(highs) >= 252:
         window = highs[-252:]
     else:
@@ -198,9 +207,14 @@ def get_52w_high(df):
         return float(np.nanmax(window))
     return np.nan
 
-# ==================== TSPR + 江恩系統模組 (已修復安全防護) ====================
+# ==================== TSPR + 江恩系統模組 ====================
 def calc_gann_time_and_cloud_system(df, direction="auto", manual_scale=0.0):
-    close, high, low, vol = df["close"], df["high"], df["low"], df["volume"]
+    # 【防呆處理】確保所有特徵都是一維 Series，防止意外成為 DataFrame
+    close = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
+    high = df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"]
+    low = df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"]
+    vol = df["volume"].iloc[:, 0] if isinstance(df["volume"], pd.DataFrame) else df["volume"]
+    
     n = len(df)
     ema_fast_1, ema_mid_1, ema_slow_1 = close.ewm(span=5).mean(), close.ewm(span=21).mean(), close.ewm(span=55).mean()
     cloud_bullish = bool(ema_fast_1.iloc[-1] > ema_mid_1.iloc[-1] > ema_slow_1.iloc[-1])
@@ -210,11 +224,12 @@ def calc_gann_time_and_cloud_system(df, direction="auto", manual_scale=0.0):
     vqc_mask = (rvol >= 1.8) & (vol > 0)
 
     lookback = min(n, 140)
-    sub_df = df.iloc[-lookback:]
+    sub_df_high = high.iloc[-lookback:]
+    sub_df_low = low.iloc[-lookback:]
     offset_idx = n - lookback
     
-    highs_sub = np.asarray(sub_df["high"], dtype=float)
-    lows_sub = np.asarray(sub_df["low"], dtype=float)
+    highs_sub = np.asarray(sub_df_high, dtype=float)
+    lows_sub = np.asarray(sub_df_low, dtype=float)
     
     if not np.all(np.isnan(highs_sub)):
         anchor_rel_hi = int(np.nanargmax(highs_sub))
@@ -265,15 +280,19 @@ def calc_gann_time_and_cloud_system(df, direction="auto", manual_scale=0.0):
 def predict_gann_turn_dates(df, forward_trading_days=45):
     if df is None or len(df) < 60: return {"top_turns": []}
     dates = pd.DatetimeIndex(df.index)
-    highs = np.asarray(df["high"], dtype=float)
-    lows = np.asarray(df["low"], dtype=float)
+    
+    # 【防呆處理】強制降維
+    high_col = df["high"].iloc[:, 0] if isinstance(df["high"], pd.DataFrame) else df["high"]
+    low_col = df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"]
+    
+    highs = np.asarray(high_col, dtype=float)
+    lows = np.asarray(low_col, dtype=float)
     n = len(df)
     
     pivots = []
-    sub_df = df.iloc[-180:]
-    offset = n - len(sub_df)
+    offset = n - 180 if n > 180 else 0
     
-    for i in range(7, len(sub_df) - 7):
+    for i in range(7, (180 if n > 180 else n) - 7):
         g_idx = offset + i
         w_highs = highs[g_idx - 7 : g_idx + 8]
         w_lows = lows[g_idx - 7 : g_idx + 8]
@@ -325,8 +344,12 @@ def predict_gann_turn_dates(df, forward_trading_days=45):
 def calc_tspr_system(df, left_bars=10):
     if df is None or len(df) < 30: return {"active_support": np.nan, "is_broken": False, "status": "資料不足"}
     
-    lows = np.asarray(df["low"], dtype=float)
-    closes = np.asarray(df["close"], dtype=float)
+    # 【防呆處理】確保提取的絕對是 1D 陣列
+    low_col = df["low"].iloc[:, 0] if isinstance(df["low"], pd.DataFrame) else df["low"]
+    close_col = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
+    
+    lows = np.asarray(low_col, dtype=float)
+    closes = np.asarray(close_col, dtype=float)
     active_support = None
     is_broken = False
     
@@ -335,7 +358,6 @@ def calc_tspr_system(df, left_bars=10):
         start_idx = max(0, pivot_idx - left_bars)
         window = lows[start_idx : i + 1]
         
-        # 安全檢查：確保 window 內有有效數值，避免 ValueError / RuntimeWarning
         if len(window) > 0 and not np.all(np.isnan(window)):
             if not np.isnan(lows[pivot_idx]) and lows[pivot_idx] == np.nanmin(window):
                 active_support = float(lows[pivot_idx])
@@ -354,7 +376,9 @@ def fetch_macro():
     for name, ticker in MACRO_TICKERS.items():
         df = fetch_ohlcv(ticker, period="1mo")
         if df is not None and not df.empty:
-            result[name] = {"val": safe_float(df["close"].iloc[-1]), "chg": (df["close"].iloc[-1] / df["close"].iloc[-2] - 1) * 100 if len(df)>1 else 0}
+            # 確保提取為 1D
+            close = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
+            result[name] = {"val": safe_float(close.iloc[-1]), "chg": (close.iloc[-1] / close.iloc[-2] - 1) * 100 if len(close)>1 else 0}
     return result
 
 def classify_market_state(market, macro_data):
@@ -363,7 +387,7 @@ def classify_market_state(market, macro_data):
     df = fetch_ohlcv(benchmark, period="1y")
     if df is None or len(df) < 205: return {"name": "未知", "strategy": "數據不足，觀望為主。"}
     
-    close = df["close"]
+    close = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
     ma50, ma200 = close.rolling(50).mean().iloc[-1], close.rolling(200).mean().iloc[-1]
     price = close.iloc[-1]
     rsi_14 = calc_rsi(close).iloc[-1]
@@ -384,8 +408,12 @@ def classify_market_state(market, macro_data):
 
 def decision_engine(ticker, df, info):
     if df is None or len(df) < 210: return None
-    close, price = df["close"], safe_float(df["close"].iloc[-1])
+    
+    close_col = df["close"].iloc[:, 0] if isinstance(df["close"], pd.DataFrame) else df["close"]
+    close = close_col
+    price = safe_float(close.iloc[-1])
     high52 = get_52w_high(df)
+    
     rsi, weekly_rsi = safe_float(calc_rsi(close).iloc[-1], 50), safe_float(calc_weekly_rsi_daily_aligned(close)[0].iloc[-1], 50)
     macd, macd_signal, _ = calc_macd(close)
     
@@ -511,7 +539,6 @@ with tabs[1]:
         
         df_results = pd.DataFrame(results)
         if not df_results.empty:
-            # 核心過濾邏輯：必須是低估值且出現技術見底特徵
             bottom_fish_df = df_results[
                 (df_results["valuation_score"] >= 60) & 
                 (df_results["bottom_score"] >= 35) & 
@@ -525,25 +552,22 @@ with tabs[1]:
                 bottom_fish_df = bottom_fish_df.sort_values("bottom_score", ascending=False)
                 
                 for _, row in bottom_fish_df.iterrows():
-                    # 計算回調階梯
-                    drawdown = row['drawdown'] # 負數，例如 -35.2
+                    drawdown = row['drawdown'] 
                     high52 = row['high52']
                     
-                    # 計算下一個 10% 目標 (向下取整。e.g. -35.2 -> -40)
                     next_milestone_pct = math.floor(drawdown / 10) * 10
                     if next_milestone_pct > -10: next_milestone_pct = -10
                     next_price = high52 * (1 + next_milestone_pct/100)
                     
-                    # 構建回調價位階梯 HTML
                     ladder_html = ""
                     for pct in range(10, 100, 10):
                         price_at_pct = high52 * (1 - pct/100)
-                        if -pct == next_milestone_pct: # 高亮下一個目標
+                        if -pct == next_milestone_pct:
                             ladder_html += f"<span style='color:#f85149; font-weight:bold; margin-right:14px;'>▼{pct}%: {price_at_pct:.2f}</span>"
                         else:
                             ladder_html += f"<span style='color:#8b949e; margin-right:14px;'>▼{pct}%: {price_at_pct:.2f}</span>"
                             
-                        if pct == 40 or pct == 80: # 稍微排版折行
+                        if pct == 40 or pct == 80: 
                             ladder_html += "<br>"
 
                     st.markdown(
@@ -571,30 +595,27 @@ with tabs[2]:
     if ticker:
         chart_df = fetch_ohlcv(ticker, period="1y")
         if chart_df is not None and len(chart_df) > 30:
-            close = chart_df["close"]
+            close = chart_df["close"].iloc[:, 0] if isinstance(chart_df["close"], pd.DataFrame) else chart_df["close"]
             gc_res = calc_gann_time_and_cloud_system(chart_df)
             tspr_res = calc_tspr_system(chart_df)
             
             fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03)
             
-            # 1. K線 + 雲圖
             fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df["open"], high=chart_df["high"], low=chart_df["low"], close=close, name="K線"), row=1, col=1)
             bull_upper = np.where(gc_res["ema_fast_1"] >= gc_res["ema_slow_1"], gc_res["ema_fast_1"], np.nan)
             fig.add_trace(go.Scatter(x=chart_df.index, y=bull_upper, fill="tonexty", fillcolor="rgba(38, 166, 154, 0.2)", line=dict(width=0), name="多頭雲"), row=1, col=1)
             
-            # 江恩 1x1 主線
             main_fan = [fl for fl in gc_res["fan_lines"] if fl["label"] == "1x1"][0]
             fig.add_trace(go.Scatter(x=main_fan["dates"], y=main_fan["values"], line=dict(color="#80deea", width=2), name="Gann 1x1 主線"), row=1, col=1)
             
-            # TSPR 支持線 (最近的活躍支持)
             if not pd.isna(tspr_res["active_support"]):
                 fig.add_hline(y=tspr_res["active_support"], line_dash="dash", line_color="#3fb950" if not tspr_res["is_broken"] else "#ef5350", annotation_text="TSPR 10日支持", row=1, col=1)
 
-            # 2. 成交量 & VQC
-            vol_colors = ["#e040fb" if dt in gc_res["vqc_dates"] else ("#3fb950" if c>=o else "#f85149") for dt, c, o in zip(chart_df.index, chart_df["close"], chart_df["open"])]
-            fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["volume"], marker_color=vol_colors, name="成交量 (紫=爆量)"), row=2, col=1)
+            vol = chart_df["volume"].iloc[:, 0] if isinstance(chart_df["volume"], pd.DataFrame) else chart_df["volume"]
+            op = chart_df["open"].iloc[:, 0] if isinstance(chart_df["open"], pd.DataFrame) else chart_df["open"]
+            vol_colors = ["#e040fb" if dt in gc_res["vqc_dates"] else ("#3fb950" if c>=o else "#f85149") for dt, c, o in zip(chart_df.index, close, op)]
+            fig.add_trace(go.Bar(x=chart_df.index, y=vol, marker_color=vol_colors, name="成交量 (紫=爆量)"), row=2, col=1)
             
-            # 3. MACD
             macd, sig, hist = calc_macd(close)
             fig.add_trace(go.Bar(x=chart_df.index, y=hist, marker_color=[C_GREEN if x>=0 else C_RED for x in hist.fillna(0)], name="MACD Hist"), row=3, col=1)
             fig.add_trace(go.Scatter(x=chart_df.index, y=macd, line=dict(color=C_BLUE), name="MACD"), row=3, col=1)
